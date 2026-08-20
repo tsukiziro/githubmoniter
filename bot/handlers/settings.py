@@ -39,7 +39,8 @@ async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def toggle_notifications_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggles notification settings."""
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
     telegram_id = update.effective_user.id
     
     user = await get_user(telegram_id)
@@ -48,14 +49,16 @@ async def toggle_notifications_callback(update: Update, context: ContextTypes.DE
         new_val = not current
         await update_user_settings(telegram_id, {"notifications": new_val})
         status_text = "Enabled 🔔" if new_val else "Disabled 🔕"
-        await query.answer(f"Notifications {status_text}")
+        if query:
+            await query.answer(f"Notifications {status_text}")
         
     await show_settings_menu(update, context)
 
 async def prompt_disconnect_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Prompts confirmation to disconnect GitHub account."""
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
     
     text = (
         "⚠️ <b>Disconnect Account Confirmation</b>\n\n"
@@ -63,14 +66,17 @@ async def prompt_disconnect_account(update: Update, context: ContextTypes.DEFAUL
         "<i>This will permanently delete your stored token, cached repositories, monitoring settings, and active scheduled commits from our database.</i>"
     )
     markup = confirm_keyboard("disconnect", "user")
-    await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
+    await safe_edit_or_reply(update, text=text, reply_markup=markup)
 
 async def handle_disconnect_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Processes confirmation to disconnect account."""
     query = update.callback_query
-    await query.answer()
-    
-    decision = query.data.split(":")[0]
+    if query:
+        await query.answer()
+        decision = query.data.split(":")[0]
+    else:
+        decision = "confirm_no"
+        
     if decision == "confirm_no":
         await show_settings_menu(update, context)
         return
@@ -79,22 +85,18 @@ async def handle_disconnect_confirmation(update: Update, context: ContextTypes.D
     await disconnect_user_account(telegram_id)
     
     oauth_url = generate_oauth_url(telegram_id)
-    await query.edit_message_text(
-        "🔌 <b>Account Disconnected</b>\n\nYour GitHub credentials and settings have been securely deleted.",
-        parse_mode="HTML",
-        reply_markup=auth_keyboard(oauth_url)
-    )
+    text = "🔌 <b>Account Disconnected</b>\n\nYour GitHub credentials and settings have been securely deleted."
+    await safe_edit_or_reply(update, text=text, reply_markup=auth_keyboard(oauth_url))
 
 # --- Change Timezone Wizard ---
 async def start_change_tz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
     
-    await query.edit_message_text(
-        "🌐 <b>Change Timezone</b>\n\nPlease enter a valid IANA timezone name (e.g. <code>Asia/Kolkata</code>, <code>America/New_York</code>, <code>Europe/London</code>, <code>UTC</code>):",
-        parse_mode="HTML",
-        reply_markup=back_cancel_keyboard("nav_settings")
-    )
+    text = "🌐 <b>Change Timezone</b>\n\nPlease enter a valid IANA timezone name (e.g. <code>Asia/Kolkata</code>, <code>America/New_York</code>, <code>Europe/London</code>, <code>UTC</code>):"
+    markup = back_cancel_keyboard("nav_settings")
+    await safe_edit_or_reply(update, text=text, reply_markup=markup)
     return SET_TIMEZONE
 
 async def receive_and_save_tz(update: Update, context: ContextTypes.DEFAULT_TYPE):
