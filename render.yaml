@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: github-guardian-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        value: "1447828370"
+      - key: MUST_JOIN_CHANNELS
+        value: "@da0realm"
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_REDIRECT_URI
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: FERNET_SECRET_KEY
+        sync: false
