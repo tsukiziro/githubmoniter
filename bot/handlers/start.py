@@ -94,57 +94,28 @@ async def check_all_force_subs(bot, telegram_id: int) -> tuple[bool, list]:
     return result
 
 async def send_force_sub_prompt(update: Update, missing_channels: list):
-    """Sends force subscription prompt with random banner photo and missing channel buttons."""
-    banner_url = get_random_banner()
+    """Sends clean force subscription prompt matching exact user design."""
+    first_name = update.effective_user.first_name if (update and update.effective_user) else "User"
     
     keyboard = []
+    row = []
     for idx, ch in enumerate(missing_channels, start=1):
-        btn_label = f"📢 Join {ch['name']}" if len(missing_channels) > 1 else "📢 Join Channel / Group"
-        keyboard.append([InlineKeyboardButton(btn_label, url=ch['url'])])
+        row.append(InlineKeyboardButton(f"Join Channel {idx}", url=ch['url']))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
         
-    keyboard.append([InlineKeyboardButton("🔄 Verify Subscription", callback_data="verify_sub")])
+    keyboard.append([InlineKeyboardButton("♻️ Try Again", callback_data="verify_sub")])
     markup = InlineKeyboardMarkup(keyboard)
 
     text = (
-        f"📢 <b>CHANNEL / GROUP SUBSCRIPTION REQUIRED</b>\n\n"
-        f"To use <b>GitHub Guardian Bot</b>, you must join our required channel(s) / group(s):\n\n"
+        f"Hey <b>{first_name}</b>\n\n"
+        f"<i>Please Join All My Update Channels To Use Me!</i>"
     )
-    for ch in missing_channels:
-        text += f"👉 <a href='{ch['url']}'>{ch['name']}</a>\n"
-        
-    text += f"\nAfter joining, click <b>Verify Subscription</b> below to unlock all bot features!"
 
-    eff_msg = update.effective_message
-    
-    # Try sending with banner photo
-    try:
-        if update.callback_query:
-            query = update.callback_query
-            try:
-                await query.message.reply_photo(photo=banner_url, caption=text, parse_mode="HTML", reply_markup=markup)
-                try:
-                    await query.delete_message()
-                except Exception:
-                    pass
-                return
-            except Exception:
-                pass
-        
-        if eff_msg:
-            await eff_msg.reply_photo(photo=banner_url, caption=text, parse_mode="HTML", reply_markup=markup)
-            return
-    except Exception as e:
-        logger.warning(f"Failed to send force-sub photo ({e}), falling back to text.")
-
-    # Fallback to plain text if photo fails (e.g. invalid photo URL in .env)
-    if update.callback_query:
-        try:
-            await update.callback_query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            if eff_msg:
-                await eff_msg.reply_text(text=text, parse_mode="HTML", reply_markup=markup)
-    elif eff_msg:
-        await eff_msg.reply_text(text=text, parse_mode="HTML", reply_markup=markup)
+    await safe_edit_or_reply(update, text=text, reply_markup=markup)
 
 async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, telegram_id: int, user: dict, token: str):
     """Renders main dashboard for authenticated user with GitHub profile avatar photo."""
