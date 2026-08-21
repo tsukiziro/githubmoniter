@@ -13,6 +13,7 @@ from bot.services.scheduler_service import (
 )
 from bot.database.mongodb import get_user_schedules, get_cached_repositories, get_user
 from bot.keyboards.inline import scheduler_menu_keyboard, schedule_detail_keyboard, back_cancel_keyboard
+from bot.utils.helpers import safe_edit_or_reply, format_user_datetime
 from bot.utils.helpers import safe_edit_or_reply
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,9 @@ async def view_schedule_detail(update: Update, context: ContextTypes.DEFAULT_TYP
     stype_display = "🟢 DEEP_GREEN (20 Commits/Day)" if stype == "DEEP_GREEN" else stype
     cron_display = f"<code>{sched['cron_expression']}</code>" if sched.get('cron_expression') else "Every 72 mins"
     
+    user_tz = sched.get('timezone', 'Asia/Kolkata')
+    last_run_formatted = format_user_datetime(last_run, user_tz) if last_run != "Never" else "Never"
+
     text = (
         f"⏰ <b>Commit Schedule Details</b>\n\n"
         f"<b>Repo:</b> {sched['repo']}\n"
@@ -93,13 +97,13 @@ async def view_schedule_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         f"<b>Commit Message:</b> {sched['commit_message']}\n"
         f"<b>Schedule Type:</b> {stype_display}\n"
         f"<b>Frequency:</b> {cron_display}\n"
-        f"<b>Timezone:</b> {sched.get('timezone', 'UTC')}\n"
+        f"<b>Timezone:</b> {user_tz}\n"
         f"<b>Status:</b> {status_str}\n\n"
         f"📊 <b>Commit Execution Stats:</b>\n"
         f"• <b>Last 4 Hours:</b> {commits_4h} commits\n"
         f"• <b>Last 24 Hours:</b> {commits_24h} commits\n"
         f"• <b>Total Executed:</b> {total_commits} commits\n"
-        f"🕒 <b>Last Executed:</b> {last_run}\n"
+        f"🕒 <b>Last Executed:</b> {last_run_formatted}\n"
     )
     
     markup = schedule_detail_keyboard(schedule_id, is_active)

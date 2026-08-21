@@ -60,7 +60,7 @@ async def save_user(
     github_username: str,
     encrypted_token: str,
     auth_method: str = "oauth",
-    tz: str = "UTC"
+    tz: str = "Asia/Kolkata"
 ) -> Dict[str, Any]:
     db = MongoDB.get_db()
     user_data = {

@@ -112,6 +112,7 @@ async def execute_scheduled_commit(schedule_id: str):
         # --- Send Instant Telegram Notification to User ---
         try:
             from bot.main import get_bot_app
+            from bot.utils.helpers import format_user_datetime
             bot_app = get_bot_app()
             if bot_app and bot_app.bot:
                 total_executed = (sched.get("total_executions", 0)) + 1
@@ -126,18 +127,19 @@ async def execute_scheduled_commit(schedule_id: str):
                 )
                 
                 interval_mins = sched.get("interval_minutes")
-                # Target for hourly/interval mode is 24 commits per day (1 per hour)
                 target_today = 24 if interval_mins else 1
                 pending_today = max(0, target_today - commits_today)
                 
                 mode_title = "🟢 DEEP GREEN COMMIT EXECUTED!" if interval_mins else "⏰ SCHEDULED COMMIT EXECUTED!"
+                user_tz = sched.get("timezone", "Asia/Kolkata")
+                formatted_time = format_user_datetime(now_iso, user_tz)
                 
                 notif_text = (
                     f"<b>{mode_title}</b>\n\n"
                     f"📦 <b>Repository:</b> <code>{sched['repo']}</code>\n"
                     f"📄 <b>File:</b> <code>{file_path}</code>\n"
                     f"💬 <b>Message:</b> <i>{commit_msg}</i>\n"
-                    f"🕒 <b>Executed At:</b> {now_utc}\n\n"
+                    f"🕒 <b>Executed At:</b> {formatted_time}\n\n"
                     f"📊 <b>Today's Activity Progress:</b>\n"
                     f"• <b>Commits Completed Today:</b> {commits_today} / {target_today}\n"
                     f"• <b>Commits Pending Today:</b> {pending_today} pending\n"
