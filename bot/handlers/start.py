@@ -131,7 +131,7 @@ async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     auth_method = user.get("auth_method", "oauth").upper()
     notifications = user.get("notifications", True)
     notif_status = "ON" if notifications else "OFF"
-    avatar_url = user.get("avatar_url")
+    avatar_url = user.get("avatar_url") or DEFAULT_AVATAR_URL
     
     total_repos = 0
     total_stars = 0
@@ -144,11 +144,22 @@ async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, t
             client.list_repositories(page=1, per_page=100),
             client.get_user_events(username)
         ]
-        if not avatar_url:
+        if not user.get("avatar_url"):
             tasks.append(client.get_user_profile())
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
+        # Check if 401 Unauthorized occurred
+        for res in results:
+            if isinstance(res, GitHubAPIException) and getattr(res, "status_code", None) == 401:
+                oauth_url = generate_oauth_url(telegram_id)
+                await safe_edit_or_reply(
+                    update,
+                    text="❌ Your GitHub access token has expired or been revoked. Please reconnect your account.",
+                    reply_markup=auth_keyboard(oauth_url)
+                )
+                return
+                
         repos = results[0] if len(results) > 0 and isinstance(results[0], list) else []
         events = results[1] if len(results) > 1 and isinstance(results[1], list) else []
         
@@ -171,15 +182,6 @@ async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, t
 
     except Exception as e:
         logger.warning(f"Error fetching dashboard metrics for user {telegram_id}: {e}")
-        if e.status_code == 401:
-            await update.effective_message.reply_text(
-                "❌ Your GitHub access token is invalid or has been revoked. Please reconnect your account.",
-                reply_markup=auth_keyboard(generate_oauth_url(telegram_id))
-            )
-            return
-
-    if not avatar_url:
-        avatar_url = DEFAULT_AVATAR_URL
 
     schedules = await get_user_schedules(telegram_id)
     active_sched_count = sum(1 for s in schedules if s.get("status") == "active")
@@ -202,56 +204,29 @@ async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     if update.callback_query:
         query = update.callback_query
         try:
-            await query.edit_message_caption(
-                caption=dashboard_text,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
+            await query.edit_message_caption(caption=dashboard_text, parse_mode="HTML", reply_markup=reply_markup)
             return
         except Exception:
             try:
-                await query.edit_message_text(
-                    text=dashboard_text,
-                    parse_mode="HTML",
-                    reply_markup=reply_markup
-                )
+                await query.edit_message_text(text=dashboard_text, parse_mode="HTML", reply_markup=reply_markup)
                 return
             except Exception:
-                try:
-                    await query.message.reply_photo(
-                        photo=avatar_url,
-                        caption=dashboard_text,
-                        parse_mode="HTML",
-                        reply_markup=reply_markup
-                    )
-                    try:
-                        await query.delete_message()
-                    except Exception:
-                        pass
-                    return
-                except Exception:
-                    pass
+                pass
 
-    # Send photo message fallback
-    if eff_msg:
-        try:
-            await eff_msg.reply_photo(
-                photo=avatar_url,
-                caption=dashboard_text,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
-        except Exception:
-            await eff_msg.reply_text(
-                text=dashboard_text,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
+    try:
+        if eff_msg:
+            await eff_msg.reply_photo(photo=avatar_url, caption=dashboard_text, parse_mode="HTML", reply_markup=reply_markup)
+            return
+    except Exception as e:
+        logger.warning(f"Could not send dashboard photo ({e}), falling back to safe text.")
+
+    await safe_edit_or_reply(update, text=dashboard_text, reply_markup=reply_markup)
 
 async def verify_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Callback triggered when user clicks 'Verify Subscription'."""
     query = update.callback_query
-    await query.answer("Verifying subscription...")
+    if query:
+        await query.answer("Verifying subscription...")
     telegram_id = update.effective_user.id
     
     # Clear force sub cache to perform live check
@@ -271,68 +246,35 @@ async def verify_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             "🐙 <b>Subscription Verified!</b>\n\n"
             "Connect your GitHub account to manage and monitor your repositories securely."
         )
-        banner_url = get_random_banner()
-        try:
-            await query.message.reply_photo(
-                photo=banner_url,
-                caption=welcome_text,
-                parse_mode="HTML",
-                reply_markup=auth_keyboard(oauth_url)
-            )
-            try:
-                await query.delete_message()
-            except Exception:
-                pass
-        except Exception:
-            try:
-                await query.edit_message_caption(
-                    caption=welcome_text,
-                    parse_mode="HTML",
-                    reply_markup=auth_keyboard(oauth_url)
-                )
-            except Exception:
-                await query.edit_message_text(
-                    text=welcome_text,
-                    parse_mode="HTML",
-                    reply_markup=auth_keyboard(oauth_url)
-                )
+        await safe_edit_or_reply(update, text=welcome_text, reply_markup=auth_keyboard(oauth_url))
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point when user runs /start."""
     telegram_id = update.effective_user.id
 
-    is_joined, missing = await check_all_force_subs(context.bot, telegram_id)
-    if not is_joined:
-        await send_force_sub_prompt(update, missing)
-        return
+    try:
+        is_joined, missing = await check_all_force_subs(context.bot, telegram_id)
+        if not is_joined:
+            await send_force_sub_prompt(update, missing)
+            return
 
-    token, user = await get_user_decrypted_token(telegram_id)
+        token, user = await get_user_decrypted_token(telegram_id)
 
-    if not token or not user:
-        oauth_url = generate_oauth_url(telegram_id)
-        welcome_text = (
-            "🐙 <b>Welcome to GitHub Guardian!</b>\n\n"
-            "Connect your GitHub account to manage and monitor your repositories securely."
+        if not token or not user:
+            oauth_url = generate_oauth_url(telegram_id)
+            welcome_text = (
+                "🐙 <b>Welcome to GitHub Guardian!</b>\n\n"
+                "Connect your GitHub account to manage and monitor your repositories securely."
+            )
+            await safe_edit_or_reply(update, text=welcome_text, reply_markup=auth_keyboard(oauth_url))
+        else:
+            await render_dashboard(update, context, telegram_id, user, token)
+    except Exception as e:
+        logger.error(f"Error executing start_command for user {telegram_id}: {e}", exc_info=e)
+        await safe_edit_or_reply(
+            update,
+            text=f"⚠️ <b>Service Temporarily Unavailable</b>\n\nCould not load dashboard: {e}"
         )
-        banner_url = get_random_banner()
-        eff_msg = update.effective_message
-        try:
-            if eff_msg:
-                await eff_msg.reply_photo(
-                    photo=banner_url,
-                    caption=welcome_text,
-                    parse_mode="HTML",
-                    reply_markup=auth_keyboard(oauth_url)
-                )
-        except Exception:
-            if eff_msg:
-                await eff_msg.reply_text(
-                    text=welcome_text,
-                    parse_mode="HTML",
-                    reply_markup=auth_keyboard(oauth_url)
-                )
-    else:
-        await render_dashboard(update, context, telegram_id, user, token)
 
 async def guide_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Renders detailed user guide and feature overview."""
