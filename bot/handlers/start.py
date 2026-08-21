@@ -9,6 +9,7 @@ from bot.services.auth_service import get_user_decrypted_token, generate_oauth_u
 from bot.services.github_api import GitHubAPIClient, GitHubAPIException
 from bot.database.mongodb import get_user_schedules, cache_user_repositories, update_user_settings, get_user
 from bot.keyboards.inline import auth_keyboard, main_dashboard_keyboard
+from bot.utils.helpers import safe_edit_or_reply
 
 logger = logging.getLogger(__name__)
 
