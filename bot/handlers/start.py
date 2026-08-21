@@ -95,8 +95,9 @@ async def check_all_force_subs(bot, telegram_id: int) -> tuple[bool, list]:
     return result
 
 async def send_force_sub_prompt(update: Update, missing_channels: list):
-    """Sends clean force subscription prompt matching exact user design."""
+    """Sends clean force subscription prompt with random banner photo."""
     first_name = update.effective_user.first_name if (update and update.effective_user) else "User"
+    banner_url = get_random_banner()
     
     keyboard = []
     row = []
@@ -115,6 +116,24 @@ async def send_force_sub_prompt(update: Update, missing_channels: list):
         f"Hey <b>{first_name}</b>\n\n"
         f"<i>Please Join All My Update Channels To Use Me!</i>"
     )
+
+    eff_msg = update.effective_message
+    
+    # Try sending photo message first
+    try:
+        if update.callback_query:
+            query = update.callback_query
+            try:
+                await query.edit_message_caption(caption=text, parse_mode="HTML", reply_markup=markup)
+                return
+            except Exception:
+                pass
+        
+        if eff_msg:
+            await eff_msg.reply_photo(photo=banner_url, caption=text, parse_mode="HTML", reply_markup=markup)
+            return
+    except Exception as e:
+        logger.warning(f"Could not send force-sub banner photo ({e}), falling back to text.")
 
     await safe_edit_or_reply(update, text=text, reply_markup=markup)
 
