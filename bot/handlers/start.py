@@ -296,7 +296,7 @@ async def guide_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "4️⃣ <b>🟢 DEEP GREEN MODE & SCHEDULED COMMITS</b>\n"
         "• Go to <b>⏰ Scheduler</b> ➔ <b>➕ New Schedule</b>.\n"
         "• Select repository, file path (send /default for <code>ACTIVITY.md</code>), commit message, and content.\n"
-        "• Select <b>🟢 Deep Green Mode (20 Commits/Day)</b> to automatically push dynamic commits every 72 minutes to keep your contribution matrix green!\n"
+        "• Select <b>🟢 Deep Green Mode (20 Commits/Day)</b> to automatically push dynamic commits every 60 minutes to keep your contribution matrix green!\n"
         "• View live 4-hour, 24-hour, and total commit execution stats anytime.\n\n"
         "5️⃣ <b>🐛 ISSUES & COLLABORATORS</b>\n"
         "• Select a repository ➔ Click <b>🐛 Issues</b> to create, close, reopen, or comment on issues.\n"
@@ -311,21 +311,16 @@ async def guide_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     if update.callback_query:
-        query = update.callback_query
-        try:
-            await query.edit_message_caption(caption=guide_text, parse_mode="HTML", reply_markup=markup)
-        except Exception:
-            try:
-                await query.edit_message_text(text=guide_text, parse_mode="HTML", reply_markup=markup)
-            except Exception:
-                await update.effective_chat.send_message(text=guide_text, parse_mode="HTML", reply_markup=markup)
-    elif update.effective_message:
-        await update.effective_message.reply_text(text=guide_text, parse_mode="HTML", reply_markup=markup)
+        await update.callback_query.answer()
+
+    await safe_edit_or_reply(update, text=guide_text, reply_markup=markup)
 
 async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles callback for returning to main menu."""
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
+        
     telegram_id = update.effective_user.id
     token, user = await get_user_decrypted_token(telegram_id)
     
@@ -334,10 +329,4 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         oauth_url = generate_oauth_url(telegram_id)
         welcome_text = "🐙 <b>Welcome to GitHub Guardian!</b>\n\nPlease connect your GitHub account:"
-        try:
-            await query.edit_message_caption(caption=welcome_text, parse_mode="HTML", reply_markup=auth_keyboard(oauth_url))
-        except Exception:
-            try:
-                await query.edit_message_text(text=welcome_text, parse_mode="HTML", reply_markup=auth_keyboard(oauth_url))
-            except Exception:
-                await update.effective_chat.send_message(text=welcome_text, parse_mode="HTML", reply_markup=auth_keyboard(oauth_url))
+        await safe_edit_or_reply(update, text=welcome_text, reply_markup=auth_keyboard(oauth_url))
