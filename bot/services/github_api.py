@@ -166,6 +166,10 @@ class GitHubAPIClient:
     async def get_user_events(self, username: str) -> List[Dict[str, Any]]:
         return await self._request("GET", f"/users/{username}/events", params={"per_page": 30})
 
+    async def get_received_events(self, username: str) -> List[Dict[str, Any]]:
+        """Events received by user (activity performed by collaborators, friends, and network)."""
+        return await self._request("GET", f"/users/{username}/received_events", params={"per_page": 30})
+
     async def get_repo_commits(self, owner: str, repo: str, per_page: int = 20) -> List[Dict[str, Any]]:
         return await self._request("GET", f"/repos/{owner}/{repo}/commits", params={"per_page": per_page})
 

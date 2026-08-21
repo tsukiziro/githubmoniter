@@ -168,6 +168,9 @@ async def start_periodic_monitoring_worker(bot_app):
                         # Real-time event detected!
                         event_type = latest_event.get("type", "GitHub Event")
                         repo_name = latest_event.get("repo", {}).get("name", "Unknown Repo")
+                        actor = latest_event.get("actor", {}).get("login", user["github_username"])
+                        actor_display = f"@{actor}" if actor != user["github_username"] else f"@{actor} (You)"
+                        
                         created_at = latest_event.get("created_at")
                         time_formatted = format_user_datetime(created_at, user_tz)
                         
@@ -185,9 +188,13 @@ async def start_periodic_monitoring_worker(bot_app):
                             payload_info = f"\n✨ <b>Created:</b> {ref_type}"
                         elif event_type == "WatchEvent":
                             payload_info = f"\n⭐ <b>Starred repository!</b>"
+                        elif event_type == "PullRequestEvent":
+                            pr = payload.get("pull_request", {})
+                            payload_info = f"\n🔀 <b>Pull Request:</b> #{pr.get('number')} {pr.get('title')}"
 
                         msg = (
                             f"⚡ <b>LIVE GITHUB ACTIVITY UPDATE</b>\n\n"
+                            f"👤 <b>Performed By:</b> {actor_display}\n"
                             f"🔔 <b>Event:</b> <code>{event_type}</code>\n"
                             f"📦 <b>Repository:</b> <code>{repo_name}</code>{payload_info}\n"
                             f"🕒 <b>Time:</b> {time_formatted}\n\n"
