@@ -18,20 +18,15 @@ def main_dashboard_keyboard(notifications_on: bool = True) -> InlineKeyboardMark
             InlineKeyboardButton("➕ Create Repo", callback_data="nav_create_repo")
         ],
         [
-            InlineKeyboardButton("📤 Push Files", callback_data="nav_push_file"),
-            InlineKeyboardButton("🐛 Issues", callback_data="nav_issues")
+            InlineKeyboardButton("📊 Analytics", callback_data="nav_analytics"),
+            InlineKeyboardButton("📅 Activity", callback_data="nav_activity")
         ],
         [
-            InlineKeyboardButton("👥 Collaborators", callback_data="nav_collaborators"),
-            InlineKeyboardButton("📊 Analytics", callback_data="nav_analytics")
-        ],
-        [
-            InlineKeyboardButton("📅 Activity", callback_data="nav_activity"),
-            InlineKeyboardButton("⏰ Scheduler", callback_data="nav_scheduler")
-        ],
-        [
-            InlineKeyboardButton(notif_text, callback_data="toggle_monitoring"),
+            InlineKeyboardButton("⏰ Scheduler", callback_data="nav_scheduler"),
             InlineKeyboardButton("⚙️ Settings", callback_data="nav_settings")
+        ],
+        [
+            InlineKeyboardButton(notif_text, callback_data="toggle_monitoring")
         ],
         [
             InlineKeyboardButton("📖 User Guide & Tutorial", callback_data="nav_guide")
@@ -69,6 +64,9 @@ def repo_list_keyboard(repos: List[Dict[str, Any]], page: int = 1, total_pages: 
 def repo_action_keyboard(repo_full_name: str) -> InlineKeyboardMarkup:
     """Individual repository action controls."""
     keyboard = [
+        [
+            InlineKeyboardButton("📤 Push Files to Repo", callback_data=f"repo_push:{repo_full_name}")
+        ],
         [
             InlineKeyboardButton("🐛 Issues", callback_data=f"repo_issues:{repo_full_name}"),
             InlineKeyboardButton("➕ New Issue", callback_data=f"repo_new_issue:{repo_full_name}")

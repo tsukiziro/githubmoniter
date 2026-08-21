@@ -135,9 +135,10 @@ async def process_github_webhook_event(bot_app, event_type: str, payload: Dict[s
 
 # --- Periodic Polling Fallback Worker ---
 async def start_periodic_monitoring_worker(bot_app):
-    """Periodic task checking user activity/events as fallback when webhooks aren't active."""
+    """Periodic task checking user activity/events for instant real-time Telegram notifications."""
     logger.info("Starting background periodic monitoring worker...")
     db = MongoDB.get_db()
+    from bot.utils.helpers import format_user_datetime
     
     last_event_ids: Dict[int, str] = {}
 
@@ -148,6 +149,7 @@ async def start_periodic_monitoring_worker(bot_app):
             users_cursor = db.users.find({"notifications": True})
             async for user in users_cursor:
                 telegram_id = user["telegram_id"]
+                user_tz = user.get("timezone", "Asia/Kolkata")
                 token, _ = await get_user_decrypted_token(telegram_id)
                 if not token:
                     continue
@@ -163,13 +165,33 @@ async def start_periodic_monitoring_worker(bot_app):
                     prev_id = last_event_ids.get(telegram_id)
 
                     if prev_id and prev_id != latest_id:
-                        # Event happened!
-                        event_type = latest_event.get("type")
-                        repo_name = latest_event.get("repo", {}).get("name")
+                        # Real-time event detected!
+                        event_type = latest_event.get("type", "GitHub Event")
+                        repo_name = latest_event.get("repo", {}).get("name", "Unknown Repo")
+                        created_at = latest_event.get("created_at")
+                        time_formatted = format_user_datetime(created_at, user_tz)
+                        
+                        payload_info = ""
+                        payload = latest_event.get("payload", {})
+                        if event_type == "PushEvent":
+                            commits = payload.get("commits", [])
+                            commit_msg = commits[0].get("message", "New Commit") if commits else "Push event"
+                            payload_info = f"\n💬 <b>Commit:</b> <i>{commit_msg}</i>\n📊 <b>Commits:</b> {len(commits)}"
+                        elif event_type == "IssuesEvent":
+                            issue = payload.get("issue", {})
+                            payload_info = f"\n🐛 <b>Issue:</b> #{issue.get('number')} {issue.get('title')}"
+                        elif event_type == "CreateEvent":
+                            ref_type = payload.get("ref_type", "branch/repo")
+                            payload_info = f"\n✨ <b>Created:</b> {ref_type}"
+                        elif event_type == "WatchEvent":
+                            payload_info = f"\n⭐ <b>Starred repository!</b>"
+
                         msg = (
-                            f"🔔 <b>Activity Update</b>\n"
-                            f"<b>Event:</b> {event_type}\n"
-                            f"<b>Repository:</b> {repo_name}"
+                            f"⚡ <b>LIVE GITHUB ACTIVITY UPDATE</b>\n\n"
+                            f"🔔 <b>Event:</b> <code>{event_type}</code>\n"
+                            f"📦 <b>Repository:</b> <code>{repo_name}</code>{payload_info}\n"
+                            f"🕒 <b>Time:</b> {time_formatted}\n\n"
+                            f"🔗 <a href='https://github.com/{repo_name}'>View Repository on GitHub</a>"
                         )
                         await notify_telegram_user(bot_app.bot, telegram_id, msg)
                     
