@@ -1,6 +1,7 @@
 import logging
 import pytz
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from bot.services.auth_service import get_user_decrypted_token
@@ -14,11 +15,33 @@ from bot.services.scheduler_service import (
 from bot.database.mongodb import get_user_schedules, get_cached_repositories, get_user
 from bot.keyboards.inline import scheduler_menu_keyboard, schedule_detail_keyboard, back_cancel_keyboard
 from bot.utils.helpers import safe_edit_or_reply, format_user_datetime
-from bot.utils.helpers import safe_edit_or_reply
 
 logger = logging.getLogger(__name__)
 
-SCHED_SELECT_REPO, SCHED_FILE_PATH, SCHED_COMMIT_MSG, SCHED_CONTENT, SCHED_TYPE, SCHED_CRON, SCHED_TZ = range(7)
+(
+    SCHED_SELECT_REPO,
+    SCHED_FILE_PATH,
+    SCHED_COMMIT_MSG,
+    SCHED_CONTENT,
+    SCHED_TYPE,
+    SCHED_COMMITS_PER_DAY,
+    SCHED_START_TIME,
+    SCHED_CRON,
+    SCHED_TZ
+) = range(9)
+
+def parse_start_time_str(time_str: str) -> Optional[str]:
+    """Parses flexible user inputs into 24-hour HH:MM format (e.g. 09:00 AM -> 09:00)."""
+    clean = time_str.strip().lower()
+    if clean in ["now", "immediately", "start immediately"]:
+        return "now"
+    formats = ["%I:%M %p", "%I:%M%p", "%I %p", "%I%p", "%H:%M", "%H"]
+    for fmt in formats:
+        try:
+            return datetime.strptime(clean, fmt).strftime("%H:%M")
+        except ValueError:
+            pass
+    return None
 
 # --- Scheduler Dashboard ---
 async def show_scheduler_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -35,7 +58,7 @@ async def show_scheduler_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         text = (
             "⏰ <b>Scheduled Commits</b>\n\n"
             "You have no active commit schedules.\n"
-            "Create scheduled commits for legitimate automated documentation updates, status files, or automated release notes."
+            "Create scheduled commits for legitimate automated documentation updates, status files, or contribution optimization."
         )
     else:
         text = f"⏰ <b>Scheduled Commits Dashboard</b> ({len(schedules)} total):"
@@ -44,51 +67,54 @@ async def show_scheduler_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     await safe_edit_or_reply(update, text=text, reply_markup=markup)
 
 async def view_schedule_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Displays detailed info and management actions for a schedule."""
     query = update.callback_query
     if query:
         await query.answer()
     
     schedule_id = query.data.split("sched_view:")[1]
     telegram_id = update.effective_user.id
-    schedules = await get_user_schedules(telegram_id)
     
+    schedules = await get_user_schedules(telegram_id)
     sched = next((s for s in schedules if s["schedule_id"] == schedule_id), None)
     if not sched:
         await safe_edit_or_reply(update, "Schedule not found.")
         return
 
-    is_active = (sched.get("status") == "active")
-    status_str = "▶️ Active" if is_active else "⏸️ Paused"
-    last_run_raw = sched.get("last_run")
-    last_run = last_run_raw.replace("T", " ")[:19] + " UTC" if last_run_raw else "Never"
+    is_active = sched["status"] == "active"
+    status_str = "🟢 Active" if is_active else "⏸️ Paused"
     
-    # Calculate execution metrics
-    total_commits = sched.get("total_executions", 0)
     history = sched.get("execution_history", [])
+    now_utc = datetime.now(timezone.utc)
     
-    now_dt = datetime.now(timezone.utc)
-    cutoff_4h = now_dt - timedelta(hours=4)
-    cutoff_24h = now_dt - timedelta(hours=24)
+    commits_4h = sum(
+        1 for ts in history 
+        if isinstance(ts, str) and (now_utc - datetime.fromisoformat(ts.replace("Z", "+00:00"))).total_seconds() <= 14400
+    )
+    commits_24h = sum(
+        1 for ts in history 
+        if isinstance(ts, str) and (now_utc - datetime.fromisoformat(ts.replace("Z", "+00:00"))).total_seconds() <= 86400
+    )
+    total_commits = len(history) if history else sched.get("total_executions", 0)
     
-    commits_4h = 0
-    commits_24h = 0
-    
-    for h in history:
-        try:
-            h_dt = datetime.fromisoformat(h)
-            if h_dt >= cutoff_4h:
-                commits_4h += 1
-            if h_dt >= cutoff_24h:
-                commits_24h += 1
-        except Exception:
-            pass
-
-    stype = sched.get("schedule_type", "").upper()
-    stype_display = "🟢 DEEP_GREEN (20 Commits/Day)" if stype == "DEEP_GREEN" else stype
-    cron_display = f"<code>{sched['cron_expression']}</code>" if sched.get('cron_expression') else "Every 72 mins"
-    
+    last_run = sched.get("last_run", "Never")
+    stype = sched.get("schedule_type", "custom")
     user_tz = sched.get('timezone', 'Asia/Kolkata')
     last_run_formatted = format_user_datetime(last_run, user_tz) if last_run != "Never" else "Never"
+    
+    cpd = sched.get("commits_per_day")
+    stime = sched.get("start_time", "now")
+    interval = sched.get("interval_minutes")
+
+    if stype == "custom_daily" or cpd:
+        stype_display = f"🎯 Custom Daily ({cpd or 24} Commits/Day)"
+        cron_display = f"1 commit every {interval} mins (Starts: {stime})"
+    elif stype == "deep_green":
+        stype_display = "🟢 DEEP_GREEN (24 Commits/Day)"
+        cron_display = "Every 60 mins"
+    else:
+        stype_display = stype.upper()
+        cron_display = f"<code>{sched.get('cron_expression', 'N/A')}</code>"
 
     text = (
         f"⏰ <b>Commit Schedule Details</b>\n\n"
@@ -164,7 +190,6 @@ async def start_create_schedule(update: Update, context: ContextTypes.DEFAULT_TY
         name = r.get("full_name")
         keyboard.append([InlineKeyboardButton(name, callback_data=f"sched_repo:{name}")])
 
-    # Pagination buttons
     nav_row = []
     if page > 1:
         nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"sched_page:{page - 1}"))
@@ -189,7 +214,7 @@ async def receive_sched_repo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         repo_full_name = query.data.split("sched_repo:")[1]
         context.user_data["sched_repo"] = repo_full_name
 
-    text = f"Selected repo: <b>{context.user_data.get('sched_repo', '')}</b>\n\nStep 2: Enter target file path (e.g. <code>docs/status.md</code>):"
+    text = f"Selected repo: <b>{context.user_data.get('sched_repo', '')}</b>\n\nStep 2: Enter target file path (e.g. <code>docs/status.md</code> or send /default for <code>ACTIVITY.md</code>):"
     await safe_edit_or_reply(update, text=text)
     return SCHED_FILE_PATH
 
@@ -234,7 +259,7 @@ async def receive_sched_commit_msg(update: Update, context: ContextTypes.DEFAULT
     context.user_data["sched_commit_msg"] = commit_msg
 
     await update.message.reply_text(
-        f"Commit message: <i>{commit_msg}</i>\n\nStep 4: Enter file content/text template (or send /default for automatic timestamp update):",
+        f"Commit message: <i>{commit_msg}</i>\n\nStep 4: Enter file content template (or send /default for automatic timestamp update):",
         parse_mode="HTML"
     )
     return SCHED_CONTENT
@@ -246,7 +271,10 @@ async def receive_sched_content(update: Update, context: ContextTypes.DEFAULT_TY
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🟢 Deep Green Mode (20 Commits/Day)", callback_data="stype_deep_green")
+            InlineKeyboardButton("🎯 Custom Commits/Day & Daily Start Time", callback_data="stype_custom_daily")
+        ],
+        [
+            InlineKeyboardButton("🟢 Deep Green Mode (24 Commits/Day)", callback_data="stype_deep_green")
         ],
         [
             InlineKeyboardButton("📅 Daily (1 Commit/Day)", callback_data="stype_daily"),
@@ -269,13 +297,37 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
     stype = query.data.split("stype_")[1]
     context.user_data["sched_type"] = stype
 
-    if stype == "deep_green":
+    if stype == "custom_daily":
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("5 Commits/Day", callback_data="cpd_5"),
+                InlineKeyboardButton("10 Commits/Day", callback_data="cpd_10")
+            ],
+            [
+                InlineKeyboardButton("15 Commits/Day", callback_data="cpd_15"),
+                InlineKeyboardButton("20 Commits/Day", callback_data="cpd_20")
+            ],
+            [
+                InlineKeyboardButton("24 Commits/Day (Hourly)", callback_data="cpd_24"),
+                InlineKeyboardButton("50 Commits/Day", callback_data="cpd_50")
+            ]
+        ])
+        msg = (
+            "📊 <b>Step 5a: How many commits per day do you want?</b>\n\n"
+            "Select an option below or type any custom number (e.g. <code>5</code>, <code>10</code>, <code>15</code>, <code>20</code>, <code>50</code>):"
+        )
+        await safe_edit_or_reply(update, text=msg, reply_markup=kb)
+        return SCHED_COMMITS_PER_DAY
+    elif stype == "deep_green":
         context.user_data["sched_cron"] = ""
-        context.user_data["sched_interval"] = 60 # 60 mins interval -> 1 commit every 1 hour (24 commits per day)
+        context.user_data["sched_interval"] = 60 # 60 mins interval -> 24 commits/day
+        context.user_data["sched_cpd"] = 24
+        context.user_data["sched_start_time"] = "now"
         return await prompt_timezone(update, context, is_callback=True)
     elif stype == "daily":
         context.user_data["sched_cron"] = "0 0 * * *"
         context.user_data["sched_interval"] = None
+        context.user_data["sched_cpd"] = 1
         return await prompt_timezone(update, context, is_callback=True)
     elif stype == "weekly":
         context.user_data["sched_cron"] = "0 0 * * 1"
@@ -283,8 +335,66 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await prompt_timezone(update, context, is_callback=True)
     else:
         context.user_data["sched_interval"] = None
-        await safe_edit_or_reply(update, text="Step 6: Enter standard 5-part cron expression (e.g., <code>0 12 * * *</code> for daily at 12:00 UTC):")
+        await safe_edit_or_reply(update, text="Step 6: Enter standard 5-part cron expression (e.g. <code>0 12 * * *</code> for daily at 12:00):")
         return SCHED_CRON
+
+async def receive_commits_per_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        cpd_str = query.data.split("cpd_")[1]
+        cpd = int(cpd_str)
+    else:
+        text = update.message.text.strip()
+        if not text.isdigit() or int(text) < 1 or int(text) > 1000:
+            await update.message.reply_text("❌ Invalid number. Please enter a valid commit count (e.g. <code>10</code>):", parse_mode="HTML")
+            return SCHED_COMMITS_PER_DAY
+        cpd = int(text)
+
+    context.user_data["sched_cpd"] = cpd
+    interval_minutes = max(1, int((24 * 60) / cpd))
+    context.user_data["sched_interval"] = interval_minutes
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🌅 09:00 AM", callback_data="stime_09:00"),
+            InlineKeyboardButton("☀️ 12:00 PM", callback_data="stime_12:00")
+        ],
+        [
+            InlineKeyboardButton("🌆 06:00 PM", callback_data="stime_18:00"),
+            InlineKeyboardButton("🌙 09:00 PM", callback_data="stime_21:00")
+        ],
+        [
+            InlineKeyboardButton("🌕 00:00 Midnight", callback_data="stime_00:00"),
+            InlineKeyboardButton("🚀 Start Immediately", callback_data="stime_now")
+        ]
+    ])
+    msg = (
+        f"✅ Target set to <b>{cpd} Commits/Day</b> (Interval: 1 commit every {interval_minutes} mins).\n\n"
+        f"🕒 <b>Step 5b: What time should commits start each day?</b>\n\n"
+        f"Select a daily start time or type custom time (e.g. <code>09:00 AM</code>, <code>10:30 AM</code>, <code>02:00 PM</code>, <code>09:00 PM</code>, <code>00:00</code>):"
+    )
+    await safe_edit_or_reply(update, text=msg, reply_markup=kb)
+    return SCHED_START_TIME
+
+async def receive_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        stime = query.data.split("stime_")[1]
+    else:
+        text = update.message.text.strip()
+        parsed = parse_start_time_str(text)
+        if not parsed:
+            await update.message.reply_text(
+                "❌ Invalid time format. Please enter a valid time (e.g. <code>09:00 AM</code>, <code>10:30 PM</code>, <code>14:00</code>, or send <code>now</code>):",
+                parse_mode="HTML"
+            )
+            return SCHED_START_TIME
+        stime = parsed
+
+    context.user_data["sched_start_time"] = stime
+    return await prompt_timezone(update, context, is_callback=bool(query))
 
 async def receive_sched_cron(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cron = update.message.text.strip()
@@ -298,13 +408,20 @@ async def receive_sched_cron(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def prompt_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback: bool = False):
     telegram_id = update.effective_user.id
     user = await get_user(telegram_id)
-    user_tz = user.get("timezone", "UTC") if user else "UTC"
+    user_tz = user.get("timezone", "Asia/Kolkata") if user else "Asia/Kolkata"
 
     stype = context.user_data.get("sched_type", "")
-    freq_desc = "20 Commits / Day (Every 72 mins)" if stype == "deep_green" else "Standard Scheduled Commit"
+    cpd = context.user_data.get("sched_cpd")
+    
+    if stype == "custom_daily":
+        freq_desc = f"{cpd} Commits / Day"
+    elif stype == "deep_green":
+        freq_desc = "24 Commits / Day (Hourly)"
+    else:
+        freq_desc = "Scheduled Commit"
 
     msg = (
-        f"Step 7: Confirm timezone for <b>{freq_desc}</b> (Default: <code>{user_tz}</code>).\n\n"
+        f"Step 6: Confirm timezone for <b>{freq_desc}</b> (Default: <code>{user_tz}</code>).\n\n"
         f"Send /default to use default or type a valid timezone (e.g. <code>Asia/Kolkata</code>, <code>America/New_York</code>):"
     )
     
@@ -315,7 +432,7 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
     tz_input = update.message.text.strip()
     telegram_id = update.effective_user.id
     user = await get_user(telegram_id)
-    user_tz = user.get("timezone", "UTC") if user else "UTC"
+    user_tz = user.get("timezone", "Asia/Kolkata") if user else "Asia/Kolkata"
 
     tz_final = user_tz if tz_input == "/default" else tz_input
 
@@ -326,6 +443,8 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
     stype = context.user_data["sched_type"]
     cron = context.user_data.get("sched_cron", "")
     interval = context.user_data.get("sched_interval")
+    cpd = context.user_data.get("sched_cpd")
+    stime = context.user_data.get("sched_start_time", "now")
 
     try:
         s_id = await create_commit_schedule(
@@ -337,19 +456,29 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
             schedule_type=stype,
             cron_expression=cron,
             interval_minutes=interval,
+            commits_per_day=cpd,
+            start_time=stime,
             user_tz=tz_final
         )
 
-        schedule_mode_text = "🟢 <b>Deep Green Mode (20 Commits/Day)</b>" if stype == "deep_green" else f"<b>Schedule Mode:</b> {stype.upper()}"
+        if stype == "custom_daily":
+            mode_desc = f"🎯 <b>Custom Daily Schedule ({cpd} Commits/Day)</b>"
+            freq_desc = f"• <b>Commits / Day:</b> {cpd}\n• <b>Interval:</b> Every {interval} minutes\n• <b>Daily Start Time:</b> {stime} ({tz_final})\n"
+        elif stype == "deep_green":
+            mode_desc = "🟢 <b>Deep Green Mode (24 Commits/Day)</b>"
+            freq_desc = "• <b>Frequency:</b> Every 60 minutes (24 commits/day)\n"
+        else:
+            mode_desc = f"<b>Schedule Mode:</b> {stype.upper()}"
+            freq_desc = f"• <b>Cron:</b> <code>{cron}</code>\n"
 
         await update.message.reply_text(
             f"🎉 <b>Commit Schedule Created!</b>\n\n"
-            f"{schedule_mode_text}\n"
-            f"<b>Repo:</b> {repo}\n"
-            f"<b>File:</b> <code>{file_path}</code>\n"
-            f"<b>Frequency:</b> Every 72 minutes (20 commits/day)\n" if stype == "deep_green" else f"<b>Cron:</b> <code>{cron}</code>\n"
-            f"<b>Timezone:</b> {tz_final}\n"
-            f"<b>Schedule ID:</b> <code>{s_id}</code>",
+            f"{mode_desc}\n"
+            f"• <b>Repo:</b> {repo}\n"
+            f"• <b>File:</b> <code>{file_path}</code>\n"
+            f"{freq_desc}"
+            f"• <b>Timezone:</b> {tz_final}\n"
+            f"• <b>Schedule ID:</b> <code>{s_id}</code>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⏰ View Schedule", callback_data=f"sched_view:{s_id}")],
@@ -385,6 +514,14 @@ create_schedule_conv_handler = ConversationHandler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sched_content)
         ],
         SCHED_TYPE: [CallbackQueryHandler(receive_sched_type, pattern="^stype_")],
+        SCHED_COMMITS_PER_DAY: [
+            CallbackQueryHandler(receive_commits_per_day, pattern="^cpd_"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_commits_per_day)
+        ],
+        SCHED_START_TIME: [
+            CallbackQueryHandler(receive_start_time, pattern="^stime_"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_start_time)
+        ],
         SCHED_CRON: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sched_cron)],
         SCHED_TZ: [
             CommandHandler("default", receive_sched_tz_and_save),

@@ -162,15 +162,28 @@ async def add_job_to_scheduler(sched: Dict[str, Any]):
         
     cron_expr = sched.get("cron_expression")
     interval_mins = sched.get("interval_minutes")
-    tz_str = sched.get("timezone", "UTC")
+    start_time_str = sched.get("start_time")
+    tz_str = sched.get("timezone", "Asia/Kolkata")
     try:
         tz = pytz.timezone(tz_str)
     except Exception:
-        tz = pytz.UTC
+        tz = pytz.timezone("Asia/Kolkata")
 
     if interval_mins:
         from apscheduler.triggers.interval import IntervalTrigger
-        trigger = IntervalTrigger(minutes=int(interval_mins), timezone=tz)
+        start_date = None
+        if start_time_str and start_time_str != "now":
+            try:
+                h, m = map(int, start_time_str.split(":"))
+                now_local = datetime.now(tz)
+                start_local = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
+                if start_local < now_local:
+                    start_local = now_local
+                start_date = start_local
+            except Exception as e:
+                logger.warning(f"Could not parse start_time '{start_time_str}': {e}")
+
+        trigger = IntervalTrigger(minutes=int(interval_mins), timezone=tz, start_date=start_date)
         scheduler.add_job(
             execute_scheduled_commit,
             trigger=trigger,
@@ -178,7 +191,7 @@ async def add_job_to_scheduler(sched: Dict[str, Any]):
             args=[schedule_id],
             replace_existing=True
         )
-        logger.info(f"Job {schedule_id} added with interval of {interval_mins} minutes.")
+        logger.info(f"Job {schedule_id} added with interval of {interval_mins} minutes (start_time={start_time_str}).")
     elif cron_expr:
         parts = cron_expr.split()
         if len(parts) == 5:
@@ -207,10 +220,12 @@ async def create_commit_schedule(
     file_path: str,
     commit_message: str,
     content: str,
-    schedule_type: str, # 'daily', 'weekly', 'deep_green', 'custom'
+    schedule_type: str, # 'daily', 'weekly', 'deep_green', 'custom_daily', 'custom'
     cron_expression: Optional[str] = None,
     interval_minutes: Optional[int] = None,
-    user_tz: str = "UTC"
+    commits_per_day: Optional[int] = None,
+    start_time: Optional[str] = None,
+    user_tz: str = "Asia/Kolkata"
 ) -> str:
     import uuid
     schedule_id = f"sched_{uuid.uuid4().hex[:10]}"
@@ -225,6 +240,8 @@ async def create_commit_schedule(
         "schedule_type": schedule_type,
         "cron_expression": cron_expression or "",
         "interval_minutes": interval_minutes,
+        "commits_per_day": commits_per_day,
+        "start_time": start_time or "now",
         "timezone": user_tz,
         "status": "active",
         "last_run": None,
