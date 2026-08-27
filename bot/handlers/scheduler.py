@@ -210,11 +210,31 @@ async def start_create_schedule(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer()
         if query.data.startswith("sched_page:"):
             page = int(query.data.split(":")[1])
+        elif query.data.startswith("repo_sched:"):
+            repo_full_name = query.data.split("repo_sched:")[1]
+            context.user_data["sched_repo"] = repo_full_name
+            return await receive_sched_repo(update, context)
     
     telegram_id = update.effective_user.id
+    token, _ = await get_user_decrypted_token(telegram_id)
+    if not token:
+        await safe_edit_or_reply(update, "Session expired. Please reconnect your account.")
+        return ConversationHandler.END
+
     repos = await get_cached_repositories(telegram_id)
     if not repos:
-        await safe_edit_or_reply(update, "Please visit Repositories first to refresh repository list.")
+        client = GitHubAPIClient(token)
+        try:
+            live_repos = await client.get_user_repos(per_page=100)
+            if live_repos:
+                from bot.database.mongodb import save_cached_repositories
+                await save_cached_repositories(telegram_id, live_repos)
+                repos = live_repos
+        except Exception as e:
+            logger.error(f"Error fetching live repos for user {telegram_id}: {e}")
+
+    if not repos:
+        await safe_edit_or_reply(update, "❌ No GitHub repositories found. Please create or connect a repository first!")
         return ConversationHandler.END
 
     per_page = 8
