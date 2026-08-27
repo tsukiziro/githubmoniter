@@ -322,17 +322,10 @@ async def receive_sched_content(update: Update, context: ContextTypes.DEFAULT_TY
             InlineKeyboardButton("🎯 Custom Commits/Day & Start Time", callback_data="stype_custom_daily")
         ],
         [
-            InlineKeyboardButton("📆 Weekly Custom Planner (Set Mon-Sun)", callback_data="stype_weekly_planner")
+            InlineKeyboardButton("📆 Multi-Repo Weekly Planner (Set Repos & Days)", callback_data="stype_weekly_planner")
         ],
         [
             InlineKeyboardButton("🟢 Deep Green Mode (24 Commits/Day)", callback_data="stype_deep_green")
-        ],
-        [
-            InlineKeyboardButton("📅 Daily (1 Commit/Day)", callback_data="stype_daily"),
-            InlineKeyboardButton("📆 Weekly (Monday Midnight)", callback_data="stype_weekly")
-        ],
-        [
-            InlineKeyboardButton("⚙️ Custom Cron Expression", callback_data="stype_custom")
         ],
         [
             InlineKeyboardButton("⬅️ Back", callback_data="sched_back_content"),
@@ -393,11 +386,11 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Default Plan (39/wk)", callback_data="wp_default")
+                InlineKeyboardButton("⚡ Auto-Balance All Repos (39/wk)", callback_data="wp_default")
             ],
             [
-                InlineKeyboardButton("⚡ Balanced Plan (35/wk)", callback_data="wp_balanced"),
-                InlineKeyboardButton("🔥 Heavy Plan (105/wk)", callback_data="wp_heavy")
+                InlineKeyboardButton("🟢 Balanced Plan (35/wk)", callback_data="wp_balanced"),
+                InlineKeyboardButton("🔥 Heavy Rotation (105/wk)", callback_data="wp_heavy")
             ],
             [
                 InlineKeyboardButton("⬅️ Back", callback_data="sched_back_type"),
@@ -410,11 +403,13 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         
         msg = (
-            f"📆 <b>Step 5a: Weekly Custom Planner</b>\n\n"
+            f"📆 <b>Step 5a: Multi-Repo Weekly Planner</b>\n\n"
             f"📅 <b>Today is:</b> <code>{day_full}, {date_str}</code> ({user_tz})\n"
-            f"Configure daily target commits for each day of the week!\n\n"
+            f"Schedule commits and assign target repositories for each day of the week!\n\n"
             f"<b>Default Plan:</b> {plan_display}\n\n"
-            f"Select a preset below or type custom daily commits (e.g., <code>Monday 5 commit tuesday 8 wednesday 10...</code> or <code>5, 8, 10, 4, 12, 2, 0</code>):"
+            f"Select a preset above or type your custom plan (e.g.:\n"
+            f"• <code>Monday repo1 and repo2 2 commits, Tuesday repo6 4 commit, Wed repo1 and repo3 4 commits</code>\n"
+            f"• <code>Mon repo1: 5, Tue repo2: 8, Wed repo3: 10, Thu repo1: 4, Fri repo2: 12, Sat repo3: 2, Sun repo1: 1</code>):"
         )
         await safe_edit_or_reply(update, text=msg, reply_markup=kb)
         return SCHED_WEEKLY_PLANNER
@@ -424,20 +419,6 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["sched_cpd"] = 24
         context.user_data["sched_start_time"] = "now"
         return await prompt_timezone(update, context, is_callback=True)
-    elif stype == "daily":
-        context.user_data["sched_cron"] = "0 0 * * *"
-        context.user_data["sched_interval"] = None
-        context.user_data["sched_cpd"] = 1
-        return await prompt_timezone(update, context, is_callback=True)
-    elif stype == "weekly":
-        context.user_data["sched_cron"] = "0 0 * * 1"
-        context.user_data["sched_interval"] = None
-        return await prompt_timezone(update, context, is_callback=True)
-    else:
-        context.user_data["sched_interval"] = None
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="sched_back_type"), InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")]])
-        await safe_edit_or_reply(update, text="Step 6: Enter standard 5-part cron expression (e.g. <code>0 12 * * *</code> for daily at 12:00):", reply_markup=kb)
-        return SCHED_CRON
 
 async def receive_commits_per_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -482,10 +463,58 @@ async def receive_commits_per_day(update: Update, context: ContextTypes.DEFAULT_
     await safe_edit_or_reply(update, text=msg, reply_markup=kb)
     return SCHED_START_TIME
 
+def parse_multi_repo_weekly_input(text: str, default_repo: str) -> Dict[str, Any]:
+    """Parses flexible multi-repo weekly schedule inputs (e.g. Monday repo1, repo2 2 commits, Tuesday repo6 4 commits)."""
+    default_days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    day_map = {
+        "mon": "Mon", "monday": "Mon",
+        "tue": "Tue", "tuesday": "Tue",
+        "wed": "Wed", "wednesday": "Wed",
+        "thu": "Thu", "thursday": "Thu",
+        "fri": "Fri", "friday": "Fri",
+        "sat": "Sat", "saturday": "Sat",
+        "sun": "Sun", "sunday": "Sun"
+    }
+    
+    clean = text.strip()
+    result = {}
+    
+    segments = re.split(r'[,;\n]', clean)
+    for seg in segments:
+        seg_clean = seg.strip()
+        if not seg_clean:
+            continue
+        
+        matched_day = None
+        for k, d in day_map.items():
+            if re.search(rf'\b{k}\b', seg_clean, re.IGNORECASE):
+                matched_day = d
+                break
+                
+        num_match = re.search(r'\b(\d+)\b', seg_clean)
+        count = int(num_match.group(1)) if num_match else 2
+        
+        repos_found = re.findall(r'[\w\-]+/[\w\-]+|repo\d+|[\w\-]+\-repo', seg_clean, re.IGNORECASE)
+        if not repos_found:
+            repos_found = [default_repo]
+            
+        if matched_day:
+            result[matched_day] = {
+                "count": count,
+                "repos": list(dict.fromkeys(repos_found))
+            }
+            
+    for d in default_days:
+        if d not in result:
+            result[d] = {"count": 2 if d not in ["Sat", "Sun"] else 1, "repos": [default_repo]}
+            
+    return result
+
 async def receive_weekly_planner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     user = await get_user(telegram_id)
     user_tz = user.get("timezone", "Asia/Kolkata") if user else "Asia/Kolkata"
+    default_repo = context.user_data.get("sched_repo", "default/repo")
     try:
         loc_tz = pytz.timezone(user_tz)
     except Exception:
@@ -500,26 +529,36 @@ async def receive_weekly_planner(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer()
         choice = query.data.split("wp_")[1]
         if choice == "balanced":
-            plan = {"Mon": 5, "Tue": 5, "Wed": 5, "Thu": 5, "Fri": 5, "Sat": 5, "Sun": 5}
+            plan = {d: 5 for d in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
         elif choice == "heavy":
-            plan = {"Mon": 15, "Tue": 15, "Wed": 15, "Thu": 15, "Fri": 15, "Sat": 15, "Sun": 15}
+            plan = {d: 15 for d in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
         else:
             plan = {"Mon": 5, "Tue": 8, "Wed": 10, "Thu": 5, "Fri": 8, "Sat": 2, "Sun": 1}
+        multi_plan = {d: {"count": c, "repos": [default_repo]} for d, c in plan.items()}
     else:
         text = update.message.text.strip()
-        plan = parse_weekly_planner_input(text)
+        multi_plan = parse_multi_repo_weekly_input(text, default_repo)
+        plan = {d: data["count"] for d, data in multi_plan.items()}
 
     context.user_data["sched_weekly_plan"] = plan
+    context.user_data["sched_multi_repo_plan"] = multi_plan
+    
     total_wk = sum(plan.values())
     today_target = plan.get(day_short, 5)
+    today_repos = multi_plan.get(day_short, {}).get("repos", [default_repo])
     
     context.user_data["sched_interval"] = max(1, int((24 * 60) / max(1, today_target)))
     context.user_data["sched_start_time"] = "now"
 
-    plan_formatted = ", ".join([f"{'📌 ' if d == day_short else ''}{d}:{c}" for d, c in plan.items()])
+    plan_formatted = "\n".join([
+        f"{'📌 ' if d == day_short else '  '}{d}: {data['count']} commits on [{', '.join(data['repos'])}]"
+        for d, data in multi_plan.items()
+    ])
+    
     msg = (
-        f"✅ <b>Weekly Plan Configured ({total_wk} Commits/Week):</b>\n"
-        f"📅 <b>Today ({day_full}):</b> {today_target} commits target\n"
+        f"✅ <b>Multi-Repo Weekly Plan Configured ({total_wk} Commits/Week):</b>\n\n"
+        f"📅 <b>Today ({day_full}):</b> {today_target} commits target on <code>{', '.join(today_repos)}</code>\n\n"
+        f"<b>Weekly Mapping:</b>\n"
         f"<code>{plan_formatted}</code>\n\n"
         f"Proceeding to timezone confirmation..."
     )
@@ -604,6 +643,7 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
     cpd = context.user_data.get("sched_cpd")
     stime = context.user_data.get("sched_start_time", "now")
     weekly_plan = context.user_data.get("sched_weekly_plan")
+    multi_repo_plan = context.user_data.get("sched_multi_repo_plan")
 
     try:
         s_id = await create_commit_schedule(
@@ -618,12 +658,16 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
             commits_per_day=cpd,
             start_time=stime,
             weekly_plan=weekly_plan,
+            multi_repo_plan=multi_repo_plan,
             user_tz=tz_final
         )
 
         if stype == "weekly_planner" and weekly_plan:
-            mode_desc = f"📆 <b>Weekly Custom Planner ({sum(weekly_plan.values())} Commits/Week)</b>"
-            plan_str = ", ".join([f"{d}:{c}" for d, c in weekly_plan.items()])
+            mode_desc = f"📆 <b>Multi-Repo Weekly Planner ({sum(weekly_plan.values())} Commits/Week)</b>"
+            if multi_repo_plan:
+                plan_str = ", ".join([f"{d}:{data['count']} ({','.join(data['repos'])})" for d, data in multi_repo_plan.items()])
+            else:
+                plan_str = ", ".join([f"{d}:{c}" for d, c in weekly_plan.items()])
             freq_desc = f"• <b>Weekly Distribution:</b> <code>{plan_str}</code>\n"
         elif stype == "custom_daily":
             mode_desc = f"🎯 <b>Custom Daily Schedule ({cpd} Commits/Day)</b>"

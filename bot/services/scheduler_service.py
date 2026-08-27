@@ -58,7 +58,28 @@ async def execute_scheduled_commit(schedule_id: str):
         logger.error(f"User {telegram_id} not authenticated for scheduled commit {schedule_id}.")
         return
 
-    owner, repo_name = sched["repo"].split("/")
+    user_tz = sched.get("timezone", "Asia/Kolkata")
+    try:
+        loc_tz = pytz.timezone(user_tz)
+    except Exception:
+        loc_tz = pytz.timezone("Asia/Kolkata")
+
+    day_name = datetime.now(loc_tz).strftime("%a")
+    multi_plan = sched.get("multi_repo_plan")
+    
+    target_repo_full = sched["repo"]
+    if isinstance(multi_plan, dict) and day_name in multi_plan:
+        day_data = multi_plan[day_name]
+        if isinstance(day_data, dict) and day_data.get("repos"):
+            repos_list = day_data["repos"]
+            exec_idx = sched.get("total_executions", 0)
+            target_repo_full = repos_list[exec_idx % len(repos_list)]
+
+    if "/" in target_repo_full:
+        owner, repo_name = target_repo_full.split("/")
+    else:
+        owner, repo_name = sched["repo"].split("/")
+
     file_path = sched.get("file_path") or "ACTIVITY.md"
     commit_msg = sched.get("commit_message") or "Update activity log"
     
@@ -258,6 +279,7 @@ async def create_commit_schedule(
     commits_per_day: Optional[int] = None,
     start_time: Optional[str] = None,
     weekly_plan: Optional[Dict[str, int]] = None,
+    multi_repo_plan: Optional[Dict[str, Any]] = None,
     user_tz: str = "Asia/Kolkata"
 ) -> str:
     import uuid
@@ -276,6 +298,7 @@ async def create_commit_schedule(
         "commits_per_day": commits_per_day,
         "start_time": start_time or "now",
         "weekly_plan": weekly_plan,
+        "multi_repo_plan": multi_repo_plan,
         "timezone": user_tz,
         "status": "active",
         "last_run": None,
