@@ -1,7 +1,8 @@
 import logging
 import pytz
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from bot.services.auth_service import get_user_decrypted_token
@@ -26,9 +27,10 @@ logger = logging.getLogger(__name__)
     SCHED_TYPE,
     SCHED_COMMITS_PER_DAY,
     SCHED_START_TIME,
+    SCHED_WEEKLY_PLANNER,
     SCHED_CRON,
     SCHED_TZ
-) = range(9)
+) = range(10)
 
 def parse_start_time_str(time_str: str) -> Optional[str]:
     """Parses flexible user inputs into 24-hour HH:MM format (e.g. 09:00 AM -> 09:00)."""
@@ -42,6 +44,37 @@ def parse_start_time_str(time_str: str) -> Optional[str]:
         except ValueError:
             pass
     return None
+
+def parse_weekly_planner_input(text: str) -> Dict[str, int]:
+    """Parses flexible weekly commit plan input into standard day dict."""
+    default_plan = {"Mon": 5, "Tue": 8, "Wed": 10, "Thu": 5, "Fri": 8, "Sat": 2, "Sun": 1}
+    clean = text.strip().lower()
+    
+    if "," in clean or len(clean.split()) == 7:
+        parts = [p.strip() for p in clean.replace(",", " ").split() if p.strip().isdigit()]
+        if len(parts) == 7:
+            days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            return {d: int(parts[i]) for i, d in enumerate(days)}
+
+    day_map = {
+        "mon": "Mon", "monday": "Mon",
+        "tue": "Tue", "tuesday": "Tue",
+        "wed": "Wed", "wednesday": "Wed",
+        "thu": "Thu", "thursday": "Thu",
+        "fri": "Fri", "friday": "Fri",
+        "sat": "Sat", "saturday": "Sat",
+        "sun": "Sun", "sunday": "Sun"
+    }
+
+    matches = re.findall(r'([a-z]{3,9})[\s:=]+(\d+)', clean)
+    if matches:
+        res = dict(default_plan)
+        for d_str, count in matches:
+            if d_str in day_map:
+                res[day_map[d_str]] = int(count)
+        return res
+
+    return default_plan
 
 # --- Scheduler Dashboard ---
 async def show_scheduler_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,8 +138,14 @@ async def view_schedule_detail(update: Update, context: ContextTypes.DEFAULT_TYP
     cpd = sched.get("commits_per_day")
     stime = sched.get("start_time", "now")
     interval = sched.get("interval_minutes")
+    weekly_plan = sched.get("weekly_plan")
 
-    if stype == "custom_daily" or cpd:
+    if stype == "weekly_planner" and isinstance(weekly_plan, dict):
+        total_wk = sum(weekly_plan.values())
+        plan_str = ", ".join([f"{d}:{c}" for d, c in weekly_plan.items()])
+        stype_display = f"📆 Weekly Planner ({total_wk} Commits/Week)"
+        cron_display = f"Daily distribution: {plan_str}"
+    elif stype == "custom_daily" or cpd:
         stype_display = f"🎯 Custom Daily ({cpd or 24} Commits/Day)"
         cron_display = f"1 commit every {interval} mins (Starts: {stime})"
     elif stype == "deep_green":
@@ -118,13 +157,14 @@ async def view_schedule_detail(update: Update, context: ContextTypes.DEFAULT_TYP
 
     text = (
         f"⏰ <b>Commit Schedule Details</b>\n\n"
-        f"<b>Repo:</b> {sched['repo']}\n"
-        f"<b>File Path:</b> <code>{sched['file_path']}</code>\n"
-        f"<b>Commit Message:</b> {sched['commit_message']}\n"
-        f"<b>Schedule Type:</b> {stype_display}\n"
-        f"<b>Frequency:</b> {cron_display}\n"
-        f"<b>Timezone:</b> {user_tz}\n"
-        f"<b>Status:</b> {status_str}\n\n"
+        f"🆔 <b>Schedule ID:</b> <code>{schedule_id}</code>\n"
+        f"📦 <b>Repo:</b> {sched['repo']}\n"
+        f"📄 <b>File Path:</b> <code>{sched['file_path']}</code>\n"
+        f"💬 <b>Commit Message:</b> {sched['commit_message']}\n"
+        f"⚙️ <b>Schedule Type:</b> {stype_display}\n"
+        f"⏱ <b>Frequency / Plan:</b> {cron_display}\n"
+        f"🌐 <b>Timezone:</b> {user_tz}\n"
+        f"🟢 <b>Status:</b> {status_str}\n\n"
         f"📊 <b>Commit Execution Stats:</b>\n"
         f"• <b>Last 4 Hours:</b> {commits_4h} commits\n"
         f"• <b>Last 24 Hours:</b> {commits_24h} commits\n"
@@ -214,8 +254,12 @@ async def receive_sched_repo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         repo_full_name = query.data.split("sched_repo:")[1]
         context.user_data["sched_repo"] = repo_full_name
 
-    text = f"Selected repo: <b>{context.user_data.get('sched_repo', '')}</b>\n\nStep 2: Enter target file path (e.g. <code>docs/status.md</code> or send /default for <code>ACTIVITY.md</code>):"
-    await safe_edit_or_reply(update, text=text)
+    text = (
+        f"Selected repo: <b>{context.user_data.get('sched_repo', '')}</b>\n\n"
+        f"Step 2: Enter target file path (e.g. <code>docs/status.md</code> or send /default for <code>ACTIVITY.md</code>):"
+    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="sched_back_repo"), InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")]])
+    await safe_edit_or_reply(update, text=text, reply_markup=kb)
     return SCHED_FILE_PATH
 
 async def receive_sched_file_path(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -246,10 +290,12 @@ async def receive_sched_file_path(update: Update, context: ContextTypes.DEFAULT_
             f"<i>No problem! GitHub Guardian will auto-create this file on your schedule run!</i>"
         )
 
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="sched_back_file"), InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")]])
     await update.message.reply_text(
         f"{status_note}\n\n"
         f"Step 3: Enter commit message (or send /default for 'Update activity log'):",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=kb
     )
     return SCHED_COMMIT_MSG
 
@@ -258,20 +304,25 @@ async def receive_sched_commit_msg(update: Update, context: ContextTypes.DEFAULT
     commit_msg = "Update activity log" if input_text == "/default" else input_text
     context.user_data["sched_commit_msg"] = commit_msg
 
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="sched_back_msg"), InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")]])
     await update.message.reply_text(
         f"Commit message: <i>{commit_msg}</i>\n\nStep 4: Enter file content template (or send /default for automatic timestamp update):",
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=kb
     )
     return SCHED_CONTENT
 
 async def receive_sched_content(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    content_input = update.message.text.strip()
+    content_input = update.message.text.strip() if update.message else "/default"
     content = "# Scheduled Automated Commit\nLast updated: {{TIMESTAMP}}\n" if content_input == "/default" else content_input
     context.user_data["sched_content"] = content
 
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎯 Custom Commits/Day & Daily Start Time", callback_data="stype_custom_daily")
+            InlineKeyboardButton("🎯 Custom Commits/Day & Start Time", callback_data="stype_custom_daily")
+        ],
+        [
+            InlineKeyboardButton("📆 Weekly Custom Planner (Set Mon-Sun)", callback_data="stype_weekly_planner")
         ],
         [
             InlineKeyboardButton("🟢 Deep Green Mode (24 Commits/Day)", callback_data="stype_deep_green")
@@ -282,13 +333,17 @@ async def receive_sched_content(update: Update, context: ContextTypes.DEFAULT_TY
         ],
         [
             InlineKeyboardButton("⚙️ Custom Cron Expression", callback_data="stype_custom")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Back", callback_data="sched_back_content"),
+            InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")
         ]
     ])
 
-    await update.message.reply_text(
-        "Step 5: Select schedule frequency mode:",
-        reply_markup=kb
-    )
+    if update.callback_query:
+        await safe_edit_or_reply(update, text="Step 5: Select schedule frequency mode:", reply_markup=kb)
+    else:
+        await update.message.reply_text("Step 5: Select schedule frequency mode:", reply_markup=kb)
     return SCHED_TYPE
 
 async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -310,6 +365,10 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [
                 InlineKeyboardButton("24 Commits/Day (Hourly)", callback_data="cpd_24"),
                 InlineKeyboardButton("50 Commits/Day", callback_data="cpd_50")
+            ],
+            [
+                InlineKeyboardButton("⬅️ Back", callback_data="sched_back_type"),
+                InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")
             ]
         ])
         msg = (
@@ -318,9 +377,31 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         await safe_edit_or_reply(update, text=msg, reply_markup=kb)
         return SCHED_COMMITS_PER_DAY
+    elif stype == "weekly_planner":
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Default Plan (39/wk)", callback_data="wp_default")
+            ],
+            [
+                InlineKeyboardButton("⚡ Balanced Plan (35/wk)", callback_data="wp_balanced"),
+                InlineKeyboardButton("🔥 Heavy Plan (105/wk)", callback_data="wp_heavy")
+            ],
+            [
+                InlineKeyboardButton("⬅️ Back", callback_data="sched_back_type"),
+                InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")
+            ]
+        ])
+        msg = (
+            "📆 <b>Step 5a: Weekly Custom Planner</b>\n\n"
+            "Configure daily target commits for each day of the week!\n\n"
+            "<b>Default Plan:</b> (Mon: 5, Tue: 8, Wed: 10, Thu: 5, Fri: 8, Sat: 2, Sun: 1)\n\n"
+            "Select a preset below or type custom daily commits (e.g., <code>Monday 5 commit tuesday 8 wednesday 10...</code> or <code>5, 8, 10, 4, 12, 2, 0</code>):"
+        )
+        await safe_edit_or_reply(update, text=msg, reply_markup=kb)
+        return SCHED_WEEKLY_PLANNER
     elif stype == "deep_green":
         context.user_data["sched_cron"] = ""
-        context.user_data["sched_interval"] = 60 # 60 mins interval -> 24 commits/day
+        context.user_data["sched_interval"] = 60
         context.user_data["sched_cpd"] = 24
         context.user_data["sched_start_time"] = "now"
         return await prompt_timezone(update, context, is_callback=True)
@@ -335,7 +416,8 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await prompt_timezone(update, context, is_callback=True)
     else:
         context.user_data["sched_interval"] = None
-        await safe_edit_or_reply(update, text="Step 6: Enter standard 5-part cron expression (e.g. <code>0 12 * * *</code> for daily at 12:00):")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="sched_back_type"), InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")]])
+        await safe_edit_or_reply(update, text="Step 6: Enter standard 5-part cron expression (e.g. <code>0 12 * * *</code> for daily at 12:00):", reply_markup=kb)
         return SCHED_CRON
 
 async def receive_commits_per_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -367,6 +449,10 @@ async def receive_commits_per_day(update: Update, context: ContextTypes.DEFAULT_
         [
             InlineKeyboardButton("🌕 00:00 Midnight", callback_data="stime_00:00"),
             InlineKeyboardButton("🚀 Start Immediately", callback_data="stime_now")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Back", callback_data="sched_back_cpd"),
+            InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")
         ]
     ])
     msg = (
@@ -376,6 +462,36 @@ async def receive_commits_per_day(update: Update, context: ContextTypes.DEFAULT_
     )
     await safe_edit_or_reply(update, text=msg, reply_markup=kb)
     return SCHED_START_TIME
+
+async def receive_weekly_planner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        choice = query.data.split("wp_")[1]
+        if choice == "balanced":
+            plan = {"Mon": 5, "Tue": 5, "Wed": 5, "Thu": 5, "Fri": 5, "Sat": 5, "Sun": 5}
+        elif choice == "heavy":
+            plan = {"Mon": 15, "Tue": 15, "Wed": 15, "Thu": 15, "Fri": 15, "Sat": 15, "Sun": 15}
+        else:
+            plan = {"Mon": 5, "Tue": 8, "Wed": 10, "Thu": 5, "Fri": 8, "Sat": 2, "Sun": 1}
+    else:
+        text = update.message.text.strip()
+        plan = parse_weekly_planner_input(text)
+
+    context.user_data["sched_weekly_plan"] = plan
+    total_wk = sum(plan.values())
+    context.user_data["sched_interval"] = max(1, int((24 * 60) / max(1, plan.get("Mon", 5))))
+    context.user_data["sched_start_time"] = "now"
+
+    plan_formatted = ", ".join([f"{d}: {c}" for d, c in plan.items()])
+    msg = f"✅ <b>Weekly Plan Configured ({total_wk} Commits/Week):</b>\n<code>{plan_formatted}</code>\n\nProceeding to timezone confirmation..."
+    
+    if query:
+        await safe_edit_or_reply(update, text=msg)
+    else:
+        await update.message.reply_text(msg, parse_mode="HTML")
+        
+    return await prompt_timezone(update, context, is_callback=bool(query))
 
 async def receive_start_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -412,24 +528,28 @@ async def prompt_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE, is
 
     stype = context.user_data.get("sched_type", "")
     cpd = context.user_data.get("sched_cpd")
+    weekly_plan = context.user_data.get("sched_weekly_plan")
     
-    if stype == "custom_daily":
+    if stype == "weekly_planner" and weekly_plan:
+        freq_desc = f"Weekly Planner ({sum(weekly_plan.values())} Commits/Week)"
+    elif stype == "custom_daily":
         freq_desc = f"{cpd} Commits / Day"
     elif stype == "deep_green":
         freq_desc = "24 Commits / Day (Hourly)"
     else:
         freq_desc = "Scheduled Commit"
 
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="sched_back_type"), InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")]])
     msg = (
         f"Step 6: Confirm timezone for <b>{freq_desc}</b> (Default: <code>{user_tz}</code>).\n\n"
         f"Send /default to use default or type a valid timezone (e.g. <code>Asia/Kolkata</code>, <code>America/New_York</code>):"
     )
     
-    await safe_edit_or_reply(update, text=msg)
+    await safe_edit_or_reply(update, text=msg, reply_markup=kb)
     return SCHED_TZ
 
 async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    tz_input = update.message.text.strip()
+    tz_input = update.message.text.strip() if update.message else "/default"
     telegram_id = update.effective_user.id
     user = await get_user(telegram_id)
     user_tz = user.get("timezone", "Asia/Kolkata") if user else "Asia/Kolkata"
@@ -445,6 +565,7 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
     interval = context.user_data.get("sched_interval")
     cpd = context.user_data.get("sched_cpd")
     stime = context.user_data.get("sched_start_time", "now")
+    weekly_plan = context.user_data.get("sched_weekly_plan")
 
     try:
         s_id = await create_commit_schedule(
@@ -458,10 +579,15 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
             interval_minutes=interval,
             commits_per_day=cpd,
             start_time=stime,
+            weekly_plan=weekly_plan,
             user_tz=tz_final
         )
 
-        if stype == "custom_daily":
+        if stype == "weekly_planner" and weekly_plan:
+            mode_desc = f"📆 <b>Weekly Custom Planner ({sum(weekly_plan.values())} Commits/Week)</b>"
+            plan_str = ", ".join([f"{d}:{c}" for d, c in weekly_plan.items()])
+            freq_desc = f"• <b>Weekly Distribution:</b> <code>{plan_str}</code>\n"
+        elif stype == "custom_daily":
             mode_desc = f"🎯 <b>Custom Daily Schedule ({cpd} Commits/Day)</b>"
             freq_desc = f"• <b>Commits / Day:</b> {cpd}\n• <b>Interval:</b> Every {interval} minutes\n• <b>Daily Start Time:</b> {stime} ({tz_final})\n"
         elif stype == "deep_green":
@@ -471,23 +597,32 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
             mode_desc = f"<b>Schedule Mode:</b> {stype.upper()}"
             freq_desc = f"• <b>Cron:</b> <code>{cron}</code>\n"
 
-        await update.message.reply_text(
+        success_text = (
             f"🎉 <b>Commit Schedule Created!</b>\n\n"
+            f"🆔 <b>Schedule ID:</b> <code>{s_id}</code>\n"
             f"{mode_desc}\n"
             f"• <b>Repo:</b> {repo}\n"
             f"• <b>File:</b> <code>{file_path}</code>\n"
             f"{freq_desc}"
             f"• <b>Timezone:</b> {tz_final}\n"
-            f"• <b>Schedule ID:</b> <code>{s_id}</code>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏰ View Schedule", callback_data=f"sched_view:{s_id}")],
-                [InlineKeyboardButton("⏰ All Schedules", callback_data="nav_scheduler")],
-                [InlineKeyboardButton("🔙 Main Dashboard", callback_data="main_menu")]
-            ])
         )
+        
+        reply_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏰ View Schedule", callback_data=f"sched_view:{s_id}")],
+            [InlineKeyboardButton("⏰ All Schedules", callback_data="nav_scheduler")],
+            [InlineKeyboardButton("🔙 Main Dashboard", callback_data="main_menu")]
+        ])
+
+        if update.callback_query:
+            await safe_edit_or_reply(update, text=success_text, reply_markup=reply_kb)
+        else:
+            await update.message.reply_text(success_text, parse_mode="HTML", reply_markup=reply_kb)
     except Exception as e:
-        await update.message.reply_text(f"❌ Failed to create schedule: {e}")
+        err_text = f"❌ Failed to create schedule: {e}"
+        if update.callback_query:
+            await safe_edit_or_reply(update, text=err_text)
+        else:
+            await update.message.reply_text(err_text)
 
     return ConversationHandler.END
 
@@ -502,28 +637,45 @@ create_schedule_conv_handler = ConversationHandler(
             CallbackQueryHandler(receive_sched_repo, pattern="^sched_repo:")
         ],
         SCHED_FILE_PATH: [
+            CallbackQueryHandler(start_create_schedule, pattern="^sched_back_repo$"),
             CommandHandler("default", receive_sched_file_path),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sched_file_path)
         ],
         SCHED_COMMIT_MSG: [
+            CallbackQueryHandler(receive_sched_repo, pattern="^sched_back_file$"),
             CommandHandler("default", receive_sched_commit_msg),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sched_commit_msg)
         ],
         SCHED_CONTENT: [
+            CallbackQueryHandler(receive_sched_file_path, pattern="^sched_back_msg$"),
             CommandHandler("default", receive_sched_content),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sched_content)
         ],
-        SCHED_TYPE: [CallbackQueryHandler(receive_sched_type, pattern="^stype_")],
+        SCHED_TYPE: [
+            CallbackQueryHandler(receive_sched_commit_msg, pattern="^sched_back_content$"),
+            CallbackQueryHandler(receive_sched_type, pattern="^stype_")
+        ],
         SCHED_COMMITS_PER_DAY: [
+            CallbackQueryHandler(receive_sched_content, pattern="^sched_back_type$"),
             CallbackQueryHandler(receive_commits_per_day, pattern="^cpd_"),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_commits_per_day)
         ],
         SCHED_START_TIME: [
+            CallbackQueryHandler(receive_sched_type, pattern="^sched_back_cpd$"),
             CallbackQueryHandler(receive_start_time, pattern="^stime_"),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_start_time)
         ],
-        SCHED_CRON: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sched_cron)],
+        SCHED_WEEKLY_PLANNER: [
+            CallbackQueryHandler(receive_sched_content, pattern="^sched_back_type$"),
+            CallbackQueryHandler(receive_weekly_planner, pattern="^wp_"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_weekly_planner)
+        ],
+        SCHED_CRON: [
+            CallbackQueryHandler(receive_sched_content, pattern="^sched_back_type$"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sched_cron)
+        ],
         SCHED_TZ: [
+            CallbackQueryHandler(receive_sched_content, pattern="^sched_back_type$"),
             CommandHandler("default", receive_sched_tz_and_save),
             MessageHandler(filters.TEXT & ~filters.COMMAND, receive_sched_tz_and_save)
         ]

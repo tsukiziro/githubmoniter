@@ -126,23 +126,44 @@ async def execute_scheduled_commit(schedule_id: str):
                     if isinstance(ts, str) and ts.startswith(today_prefix)
                 )
                 
-                interval_mins = sched.get("interval_minutes")
-                target_today = 24 if interval_mins else 1
-                pending_today = max(0, target_today - commits_today)
-                
-                mode_title = "🟢 DEEP GREEN COMMIT EXECUTED!" if interval_mins else "⏰ SCHEDULED COMMIT EXECUTED!"
+                stype = sched.get("schedule_type", "custom")
+                cpd = sched.get("commits_per_day")
+                weekly_plan = sched.get("weekly_plan")
                 user_tz = sched.get("timezone", "Asia/Kolkata")
+
+                if stype == "weekly_planner" and isinstance(weekly_plan, dict):
+                    try:
+                        loc_tz = pytz.timezone(user_tz)
+                    except Exception:
+                        loc_tz = pytz.timezone("Asia/Kolkata")
+                    day_name = datetime.now(loc_tz).strftime("%a")
+                    target_today = weekly_plan.get(day_name, 5)
+                    plan_desc = f"📆 Weekly Planner (Today {day_name}: {target_today} Commits)"
+                elif stype == "custom_daily" or cpd:
+                    target_today = cpd or 24
+                    plan_desc = f"🎯 Custom Daily ({target_today} Commits/Day)"
+                elif stype == "deep_green":
+                    target_today = 24
+                    plan_desc = "🟢 Deep Green Mode (24 Commits/Day)"
+                else:
+                    target_today = 1
+                    plan_desc = f"📅 Cron (<code>{sched.get('cron_expression', 'Daily')}</code>)"
+
+                pending_today = max(0, target_today - commits_today)
+                mode_title = "🚀 SCHEDULED COMMIT EXECUTED!"
                 formatted_time = format_user_datetime(now_iso, user_tz)
                 
                 notif_text = (
                     f"<b>{mode_title}</b>\n\n"
+                    f"🆔 <b>Schedule ID:</b> <code>{schedule_id}</code>\n"
                     f"📦 <b>Repository:</b> <code>{sched['repo']}</code>\n"
-                    f"📄 <b>File:</b> <code>{file_path}</code>\n"
-                    f"💬 <b>Message:</b> <i>{commit_msg}</i>\n"
+                    f"📄 <b>File Path:</b> <code>{file_path}</code>\n"
+                    f"💬 <b>Commit Message:</b> <i>{commit_msg}</i>\n"
+                    f"⚙️ <b>Schedule Plan:</b> {plan_desc}\n"
                     f"🕒 <b>Executed At:</b> {formatted_time}\n\n"
-                    f"📊 <b>Today's Activity Progress:</b>\n"
-                    f"• <b>Commits Completed Today:</b> {commits_today} / {target_today}\n"
-                    f"• <b>Commits Pending Today:</b> {pending_today} pending\n"
+                    f"📊 <b>Today's Activity Metrics:</b>\n"
+                    f"• <b>Completed Today:</b> {commits_today} / {target_today} commits\n"
+                    f"• <b>Pending Today:</b> {pending_today} pending\n"
                     f"• <b>Total Lifetime Executions:</b> {total_executed}\n\n"
                     f"🔗 <a href='https://github.com/{sched['repo']}'>View Repository on GitHub</a>"
                 )
@@ -163,11 +184,22 @@ async def add_job_to_scheduler(sched: Dict[str, Any]):
     cron_expr = sched.get("cron_expression")
     interval_mins = sched.get("interval_minutes")
     start_time_str = sched.get("start_time")
+    stype = sched.get("schedule_type")
+    weekly_plan = sched.get("weekly_plan")
     tz_str = sched.get("timezone", "Asia/Kolkata")
     try:
         tz = pytz.timezone(tz_str)
     except Exception:
         tz = pytz.timezone("Asia/Kolkata")
+
+    if stype == "weekly_planner" and isinstance(weekly_plan, dict):
+        # Calculate today's interval dynamically
+        day_name = datetime.now(tz).strftime("%a")
+        target_today = weekly_plan.get(day_name, 5)
+        if target_today > 0:
+            interval_mins = max(1, int((24 * 60) / target_today))
+        else:
+            interval_mins = None
 
     if interval_mins:
         from apscheduler.triggers.interval import IntervalTrigger
@@ -220,11 +252,12 @@ async def create_commit_schedule(
     file_path: str,
     commit_message: str,
     content: str,
-    schedule_type: str, # 'daily', 'weekly', 'deep_green', 'custom_daily', 'custom'
+    schedule_type: str, # 'daily', 'weekly', 'deep_green', 'custom_daily', 'weekly_planner', 'custom'
     cron_expression: Optional[str] = None,
     interval_minutes: Optional[int] = None,
     commits_per_day: Optional[int] = None,
     start_time: Optional[str] = None,
+    weekly_plan: Optional[Dict[str, int]] = None,
     user_tz: str = "Asia/Kolkata"
 ) -> str:
     import uuid
@@ -242,6 +275,7 @@ async def create_commit_schedule(
         "interval_minutes": interval_minutes,
         "commits_per_day": commits_per_day,
         "start_time": start_time or "now",
+        "weekly_plan": weekly_plan,
         "timezone": user_tz,
         "status": "active",
         "last_run": None,
