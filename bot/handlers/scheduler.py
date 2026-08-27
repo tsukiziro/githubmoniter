@@ -378,6 +378,19 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await safe_edit_or_reply(update, text=msg, reply_markup=kb)
         return SCHED_COMMITS_PER_DAY
     elif stype == "weekly_planner":
+        telegram_id = update.effective_user.id
+        user = await get_user(telegram_id)
+        user_tz = user.get("timezone", "Asia/Kolkata") if user else "Asia/Kolkata"
+        try:
+            loc_tz = pytz.timezone(user_tz)
+        except Exception:
+            loc_tz = pytz.timezone("Asia/Kolkata")
+
+        now_loc = datetime.now(loc_tz)
+        day_full = now_loc.strftime("%A")
+        day_short = now_loc.strftime("%a")
+        date_str = now_loc.strftime("%d %b %Y")
+
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ Default Plan (39/wk)", callback_data="wp_default")
@@ -391,11 +404,17 @@ async def receive_sched_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 InlineKeyboardButton("❌ Cancel", callback_data="nav_scheduler")
             ]
         ])
+        
+        plan_display = "(Mon: 5, Tue: 8, Wed: 10, Thu: 5, Fri: 8, Sat: 2, Sun: 1)".replace(
+            f"{day_short}:", f"📌 {day_short}:"
+        )
+        
         msg = (
-            "📆 <b>Step 5a: Weekly Custom Planner</b>\n\n"
-            "Configure daily target commits for each day of the week!\n\n"
-            "<b>Default Plan:</b> (Mon: 5, Tue: 8, Wed: 10, Thu: 5, Fri: 8, Sat: 2, Sun: 1)\n\n"
-            "Select a preset below or type custom daily commits (e.g., <code>Monday 5 commit tuesday 8 wednesday 10...</code> or <code>5, 8, 10, 4, 12, 2, 0</code>):"
+            f"📆 <b>Step 5a: Weekly Custom Planner</b>\n\n"
+            f"📅 <b>Today is:</b> <code>{day_full}, {date_str}</code> ({user_tz})\n"
+            f"Configure daily target commits for each day of the week!\n\n"
+            f"<b>Default Plan:</b> {plan_display}\n\n"
+            f"Select a preset below or type custom daily commits (e.g., <code>Monday 5 commit tuesday 8 wednesday 10...</code> or <code>5, 8, 10, 4, 12, 2, 0</code>):"
         )
         await safe_edit_or_reply(update, text=msg, reply_markup=kb)
         return SCHED_WEEKLY_PLANNER
@@ -464,6 +483,18 @@ async def receive_commits_per_day(update: Update, context: ContextTypes.DEFAULT_
     return SCHED_START_TIME
 
 async def receive_weekly_planner(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    telegram_id = update.effective_user.id
+    user = await get_user(telegram_id)
+    user_tz = user.get("timezone", "Asia/Kolkata") if user else "Asia/Kolkata"
+    try:
+        loc_tz = pytz.timezone(user_tz)
+    except Exception:
+        loc_tz = pytz.timezone("Asia/Kolkata")
+
+    now_loc = datetime.now(loc_tz)
+    day_short = now_loc.strftime("%a")
+    day_full = now_loc.strftime("%A")
+
     query = update.callback_query
     if query:
         await query.answer()
@@ -480,11 +511,18 @@ async def receive_weekly_planner(update: Update, context: ContextTypes.DEFAULT_T
 
     context.user_data["sched_weekly_plan"] = plan
     total_wk = sum(plan.values())
-    context.user_data["sched_interval"] = max(1, int((24 * 60) / max(1, plan.get("Mon", 5))))
+    today_target = plan.get(day_short, 5)
+    
+    context.user_data["sched_interval"] = max(1, int((24 * 60) / max(1, today_target)))
     context.user_data["sched_start_time"] = "now"
 
-    plan_formatted = ", ".join([f"{d}: {c}" for d, c in plan.items()])
-    msg = f"✅ <b>Weekly Plan Configured ({total_wk} Commits/Week):</b>\n<code>{plan_formatted}</code>\n\nProceeding to timezone confirmation..."
+    plan_formatted = ", ".join([f"{'📌 ' if d == day_short else ''}{d}:{c}" for d, c in plan.items()])
+    msg = (
+        f"✅ <b>Weekly Plan Configured ({total_wk} Commits/Week):</b>\n"
+        f"📅 <b>Today ({day_full}):</b> {today_target} commits target\n"
+        f"<code>{plan_formatted}</code>\n\n"
+        f"Proceeding to timezone confirmation..."
+    )
     
     if query:
         await safe_edit_or_reply(update, text=msg)
