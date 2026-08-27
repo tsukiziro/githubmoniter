@@ -177,7 +177,7 @@ async def execute_scheduled_commit(schedule_id: str):
                 notif_text = (
                     f"<b>{mode_title}</b>\n\n"
                     f"🆔 <b>Schedule ID:</b> <code>{schedule_id}</code>\n"
-                    f"📦 <b>Repository:</b> <code>{sched['repo']}</code>\n"
+                    f"📦 <b>Active Repository:</b> <code>{target_repo_full}</code>\n"
                     f"📄 <b>File Path:</b> <code>{file_path}</code>\n"
                     f"💬 <b>Commit Message:</b> <i>{commit_msg}</i>\n"
                     f"⚙️ <b>Schedule Plan:</b> {plan_desc}\n"
@@ -186,7 +186,7 @@ async def execute_scheduled_commit(schedule_id: str):
                     f"• <b>Completed Today:</b> {commits_today} / {target_today} commits\n"
                     f"• <b>Pending Today:</b> {pending_today} pending\n"
                     f"• <b>Total Lifetime Executions:</b> {total_executed}\n\n"
-                    f"🔗 <a href='https://github.com/{sched['repo']}'>View Repository on GitHub</a>"
+                    f"🔗 <a href='https://github.com/{target_repo_full}'>View Repository on GitHub</a>"
                 )
                 await bot_app.bot.send_message(chat_id=telegram_id, text=notif_text, parse_mode="HTML")
         except Exception as ne:

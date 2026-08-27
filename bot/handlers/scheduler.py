@@ -524,6 +524,11 @@ async def receive_weekly_planner(update: Update, context: ContextTypes.DEFAULT_T
     day_short = now_loc.strftime("%a")
     day_full = now_loc.strftime("%A")
 
+    repos = await get_cached_repositories(telegram_id)
+    repo_names = [r.get("full_name") for r in repos] if repos else [default_repo]
+    if not repo_names:
+        repo_names = [default_repo]
+
     query = update.callback_query
     if query:
         await query.answer()
@@ -534,7 +539,14 @@ async def receive_weekly_planner(update: Update, context: ContextTypes.DEFAULT_T
             plan = {d: 15 for d in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]}
         else:
             plan = {"Mon": 5, "Tue": 8, "Wed": 10, "Thu": 5, "Fri": 8, "Sat": 2, "Sun": 1}
-        multi_plan = {d: {"count": c, "repos": [default_repo]} for d, c in plan.items()}
+
+        multi_plan = {}
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        for idx, d in enumerate(days):
+            r1 = repo_names[idx % len(repo_names)]
+            r2 = repo_names[(idx + 1) % len(repo_names)]
+            selected = [r1, r2] if len(repo_names) > 1 and plan[d] > 2 else [r1]
+            multi_plan[d] = {"count": plan[d], "repos": selected}
     else:
         text = update.message.text.strip()
         multi_plan = parse_multi_repo_weekly_input(text, default_repo)
