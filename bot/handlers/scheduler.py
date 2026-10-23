@@ -225,10 +225,10 @@ async def start_create_schedule(update: Update, context: ContextTypes.DEFAULT_TY
     if not repos:
         client = GitHubAPIClient(token)
         try:
-            live_repos = await client.get_user_repos(per_page=100)
+            live_repos = await client.list_repositories(page=1, per_page=100)
             if live_repos:
-                from bot.database.mongodb import save_cached_repositories
-                await save_cached_repositories(telegram_id, live_repos)
+                from bot.database.mongodb import cache_user_repositories
+                await cache_user_repositories(telegram_id, live_repos)
                 repos = live_repos
         except Exception as e:
             logger.error(f"Error fetching live repos for user {telegram_id}: {e}")

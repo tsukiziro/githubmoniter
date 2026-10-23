@@ -44,10 +44,13 @@ class MongoDB:
             # Repositories cache index
             await db.repositories_cache.create_index("telegram_id")
             
-            # Webhook events index
-            await db.webhook_events.create_index("created_at")
+            # Webhook events TTL index (automatically delete entries after 24 hours = 86400s)
+            await db.webhook_events.create_index("created_at", expireAfterSeconds=86400)
 
             logger.info("MongoDB indexes initialized successfully.")
+            
+            # Run cleanup on startup to purge any existing bloated records
+            await cleanup_database_bloat()
         except Exception as e:
             logger.warning(f"MongoDB index initialization error: {e}")
 
@@ -110,16 +113,36 @@ async def delete_user(telegram_id: int) -> bool:
 
 # --- Cache Management ---
 async def cache_user_repositories(telegram_id: int, repos: List[Dict[str, Any]]):
+    """Caches minimal required repository metadata to prevent database bloat."""
     db = MongoDB.get_db()
+    pruned_repos = []
+    for r in repos:
+        if isinstance(r, dict):
+            pruned_repos.append({
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "full_name": r.get("full_name") or r.get("name"),
+                "private": bool(r.get("private")),
+                "description": (r.get("description") or "")[:200],
+                "html_url": r.get("html_url"),
+                "stargazers_count": r.get("stargazers_count", 0),
+                "forks_count": r.get("forks_count", 0),
+                "watchers_count": r.get("watchers_count", 0),
+                "open_issues_count": r.get("open_issues_count", 0),
+                "default_branch": r.get("default_branch", "main"),
+                "updated_at": r.get("updated_at")
+            })
     await db.repositories_cache.update_one(
         {"telegram_id": telegram_id},
         {"$set": {
             "telegram_id": telegram_id,
-            "repositories": repos,
+            "repositories": pruned_repos,
             "cached_at": datetime.now(timezone.utc).isoformat()
         }},
         upsert=True
     )
+
+save_cached_repositories = cache_user_repositories
 
 async def get_cached_repositories(telegram_id: int) -> Optional[List[Dict[str, Any]]]:
     db = MongoDB.get_db()
@@ -185,12 +208,57 @@ async def get_monitoring_setting(telegram_id: int) -> List[str]:
 
 # --- Webhook Events Log ---
 async def log_webhook_event(event_type: str, payload: Dict[str, Any]):
+    """Logs lightweight webhook event summary with datetime for 24h TTL auto-deletion."""
     db = MongoDB.get_db()
+    repo_name = payload.get("repository", {}).get("full_name")
+    sender = payload.get("sender", {}).get("login")
+    action = payload.get("action")
+    
     await db.webhook_events.insert_one({
         "event_type": event_type,
-        "payload": payload,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "repo": repo_name,
+        "sender": sender,
+        "action": action,
+        "created_at": datetime.now(timezone.utc)
     })
+
+# --- Database Bloat Cleanup Helper ---
+async def cleanup_database_bloat():
+    """Purges legacy raw webhook event payloads and prunes repository caches."""
+    try:
+        db = MongoDB.get_db()
+        # Delete heavy legacy webhook events storing full raw JSON payloads
+        await db.webhook_events.delete_many({"payload": {"$exists": True}})
+        
+        # Prune existing repository caches in MongoDB
+        cursor = db.repositories_cache.find({})
+        async for doc in cursor:
+            repos = doc.get("repositories", [])
+            if repos and isinstance(repos, list):
+                pruned = []
+                for r in repos:
+                    if isinstance(r, dict):
+                        pruned.append({
+                            "id": r.get("id"),
+                            "name": r.get("name"),
+                            "full_name": r.get("full_name") or r.get("name"),
+                            "private": bool(r.get("private")),
+                            "description": (r.get("description") or "")[:200],
+                            "html_url": r.get("html_url"),
+                            "stargazers_count": r.get("stargazers_count", 0),
+                            "forks_count": r.get("forks_count", 0),
+                            "watchers_count": r.get("watchers_count", 0),
+                            "open_issues_count": r.get("open_issues_count", 0),
+                            "default_branch": r.get("default_branch", "main"),
+                            "updated_at": r.get("updated_at")
+                        })
+                await db.repositories_cache.update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"repositories": pruned}}
+                )
+        logger.info("Database bloat cleanup executed successfully.")
+    except Exception as e:
+        logger.warning(f"Error during database bloat cleanup: {e}")
 
 # --- Admin Database Helpers ---
 async def get_all_registered_users() -> List[Dict[str, Any]]:
@@ -220,3 +288,4 @@ async def get_admin_dashboard_stats() -> Dict[str, Any]:
         "total_schedules": total_schedules,
         "active_schedules": active_schedules
     }
+
