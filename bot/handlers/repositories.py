@@ -17,25 +17,35 @@ logger = logging.getLogger(__name__)
 CREATE_REPO_NAME, CREATE_REPO_DESC, CREATE_REPO_VISIBILITY = range(3)
 
 # --- Repository Listing & Pagination ---
-async def show_repositories(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
-    """Displays paginated list of repositories."""
+async def show_repositories(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1, force_refresh: bool = False):
+    """Displays paginated list of repositories on-demand without bloating database storage."""
     telegram_id = update.effective_user.id
     token, _ = await get_user_decrypted_token(telegram_id)
     if not token:
         await safe_edit_or_reply(update, "Please connect your GitHub account first.")
         return
 
-    client = GitHubAPIClient(token)
-    try:
-        repos = await client.list_repositories(page=1, per_page=100)
-        await cache_user_repositories(telegram_id, repos)
-    except GitHubAPIException as e:
-        cached = await get_cached_repositories(telegram_id)
-        if cached:
-            repos = cached
-        else:
-            await safe_edit_or_reply(update, f"❌ Error fetching repositories: {e}")
-            return
+    repos = None if force_refresh else context.user_data.get("session_repos")
+    if not repos:
+        client = GitHubAPIClient(token)
+        try:
+            repos = await client.list_repositories(page=1, per_page=100)
+            context.user_data["session_repos"] = repos
+            total_stars = sum(r.get("stargazers_count", 0) for r in repos)
+            total_forks = sum(r.get("forks_count", 0) for r in repos)
+            from bot.database.mongodb import update_user_settings
+            await update_user_settings(telegram_id, {
+                "total_stars": total_stars,
+                "total_forks": total_forks,
+                "total_repos": len(repos)
+            })
+        except GitHubAPIException as e:
+            cached = await get_cached_repositories(telegram_id)
+            if cached:
+                repos = cached
+            else:
+                await safe_edit_or_reply(update, f"❌ Error fetching repositories: {e}")
+                return
 
     per_page = 5
     total_repos = len(repos)

@@ -111,27 +111,47 @@ async def delete_user(telegram_id: int) -> bool:
     await db.monitoring_settings.delete_one({"telegram_id": telegram_id})
     return True
 
-# --- Cache Management ---
-async def cache_user_repositories(telegram_id: int, repos: List[Dict[str, Any]]):
-    """Caches minimal required repository metadata to prevent database bloat."""
+# --- Cache & Connected Repositories Management ---
+async def cache_user_repositories(telegram_id: int, repos: List[Dict[str, Any]], only_scheduled: bool = True):
+    """Caches only connected (scheduled) repositories to save MongoDB storage."""
     db = MongoDB.get_db()
+    
+    if only_scheduled:
+        user_schedules = await get_user_schedules(telegram_id)
+        scheduled_names = set()
+        for s in user_schedules:
+            if s.get("repo"):
+                scheduled_names.add(s["repo"])
+            multi_plan = s.get("multi_repo_plan") or {}
+            for day_data in multi_plan.values():
+                if isinstance(day_data, dict):
+                    for r in day_data.get("repos", []):
+                        scheduled_names.add(r)
+        
+        filtered = [
+            r for r in repos 
+            if isinstance(r, dict) and (r.get("full_name") in scheduled_names or r.get("name") in scheduled_names)
+        ]
+    else:
+        filtered = repos
+
+    if not filtered:
+        # If user has no scheduled repos, delete cache document completely
+        await db.repositories_cache.delete_one({"telegram_id": telegram_id})
+        return
+
     pruned_repos = []
-    for r in repos:
-        if isinstance(r, dict):
-            pruned_repos.append({
-                "id": r.get("id"),
-                "name": r.get("name"),
-                "full_name": r.get("full_name") or r.get("name"),
-                "private": bool(r.get("private")),
-                "description": (r.get("description") or "")[:200],
-                "html_url": r.get("html_url"),
-                "stargazers_count": r.get("stargazers_count", 0),
-                "forks_count": r.get("forks_count", 0),
-                "watchers_count": r.get("watchers_count", 0),
-                "open_issues_count": r.get("open_issues_count", 0),
-                "default_branch": r.get("default_branch", "main"),
-                "updated_at": r.get("updated_at")
-            })
+    for r in filtered:
+        pruned_repos.append({
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "full_name": r.get("full_name") or r.get("name"),
+            "private": bool(r.get("private")),
+            "description": (r.get("description") or "")[:200],
+            "html_url": r.get("html_url"),
+            "default_branch": r.get("default_branch", "main"),
+            "updated_at": r.get("updated_at")
+        })
     await db.repositories_cache.update_one(
         {"telegram_id": telegram_id},
         {"$set": {
@@ -145,6 +165,7 @@ async def cache_user_repositories(telegram_id: int, repos: List[Dict[str, Any]])
 save_cached_repositories = cache_user_repositories
 
 async def get_cached_repositories(telegram_id: int) -> Optional[List[Dict[str, Any]]]:
+    """Returns connected/scheduled repositories from cache, or None if empty."""
     db = MongoDB.get_db()
     doc = await db.repositories_cache.find_one({"telegram_id": telegram_id})
     if doc:
@@ -175,6 +196,10 @@ async def get_all_active_schedules() -> List[Dict[str, Any]]:
 async def delete_schedule(schedule_id: str, telegram_id: int) -> bool:
     db = MongoDB.get_db()
     res = await db.schedules.delete_one({"schedule_id": schedule_id, "telegram_id": telegram_id})
+    # If user has no more schedules left, clear their repo cache document
+    remaining = await get_user_schedules(telegram_id)
+    if not remaining:
+        await db.repositories_cache.delete_one({"telegram_id": telegram_id})
     return res.deleted_count > 0
 
 async def update_schedule_status(schedule_id: str, status: str) -> bool:
@@ -224,38 +249,58 @@ async def log_webhook_event(event_type: str, payload: Dict[str, Any]):
 
 # --- Database Bloat Cleanup Helper ---
 async def cleanup_database_bloat():
-    """Purges legacy raw webhook event payloads and prunes repository caches."""
+    """Purges legacy raw webhook event payloads and cleans unscheduled repo cache bloat."""
     try:
         db = MongoDB.get_db()
         # Delete heavy legacy webhook events storing full raw JSON payloads
         await db.webhook_events.delete_many({"payload": {"$exists": True}})
         
-        # Prune existing repository caches in MongoDB
+        # Clean repositories_cache: remove any entries for users who have no schedules,
+        # and retain ONLY scheduled repos for users who have active schedules.
         cursor = db.repositories_cache.find({})
         async for doc in cursor:
-            repos = doc.get("repositories", [])
-            if repos and isinstance(repos, list):
-                pruned = []
-                for r in repos:
-                    if isinstance(r, dict):
-                        pruned.append({
-                            "id": r.get("id"),
-                            "name": r.get("name"),
-                            "full_name": r.get("full_name") or r.get("name"),
-                            "private": bool(r.get("private")),
-                            "description": (r.get("description") or "")[:200],
-                            "html_url": r.get("html_url"),
-                            "stargazers_count": r.get("stargazers_count", 0),
-                            "forks_count": r.get("forks_count", 0),
-                            "watchers_count": r.get("watchers_count", 0),
-                            "open_issues_count": r.get("open_issues_count", 0),
-                            "default_branch": r.get("default_branch", "main"),
-                            "updated_at": r.get("updated_at")
-                        })
-                await db.repositories_cache.update_one(
-                    {"_id": doc["_id"]},
-                    {"$set": {"repositories": pruned}}
-                )
+            tg_id = doc.get("telegram_id")
+            if not tg_id:
+                await db.repositories_cache.delete_one({"_id": doc["_id"]})
+                continue
+
+            user_schedules = await get_user_schedules(tg_id)
+            if not user_schedules:
+                # No scheduled repos -> remove cache completely
+                await db.repositories_cache.delete_one({"_id": doc["_id"]})
+            else:
+                scheduled_names = set()
+                for s in user_schedules:
+                    if s.get("repo"):
+                        scheduled_names.add(s["repo"])
+                    multi_plan = s.get("multi_repo_plan") or {}
+                    for day_data in multi_plan.values():
+                        if isinstance(day_data, dict):
+                            for r in day_data.get("repos", []):
+                                scheduled_names.add(r)
+
+                existing_repos = doc.get("repositories", [])
+                pruned = [
+                    {
+                        "id": r.get("id"),
+                        "name": r.get("name"),
+                        "full_name": r.get("full_name") or r.get("name"),
+                        "private": bool(r.get("private")),
+                        "description": (r.get("description") or "")[:200],
+                        "html_url": r.get("html_url"),
+                        "default_branch": r.get("default_branch", "main"),
+                        "updated_at": r.get("updated_at")
+                    }
+                    for r in existing_repos
+                    if isinstance(r, dict) and (r.get("full_name") in scheduled_names or r.get("name") in scheduled_names)
+                ]
+                if pruned:
+                    await db.repositories_cache.update_one(
+                        {"_id": doc["_id"]},
+                        {"$set": {"repositories": pruned}}
+                    )
+                else:
+                    await db.repositories_cache.delete_one({"_id": doc["_id"]})
         logger.info("Database bloat cleanup executed successfully.")
     except Exception as e:
         logger.warning(f"Error during database bloat cleanup: {e}")

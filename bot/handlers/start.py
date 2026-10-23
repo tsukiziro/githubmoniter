@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ChatJoinRequestHandler
 from bot.services.auth_service import get_user_decrypted_token, generate_oauth_url
 from bot.services.github_api import GitHubAPIClient, GitHubAPIException
-from bot.database.mongodb import get_user_schedules, cache_user_repositories, update_user_settings, get_user
+from bot.database.mongodb import get_user_schedules, update_user_settings, get_user
 from bot.keyboards.inline import auth_keyboard, main_dashboard_keyboard
 from bot.utils.helpers import safe_edit_or_reply
 
@@ -159,14 +159,11 @@ async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     recent_activity = "No recent activity recorded."
     
     try:
-        # Execute parallel requests for maximum speed
+        # Execute parallel lightweight requests: profile stats & user events
         tasks = [
-            client.list_repositories(page=1, per_page=100),
+            client.get_user_profile(),
             client.get_user_events(username)
         ]
-        if not user.get("avatar_url"):
-            tasks.append(client.get_user_profile())
-
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Check if 401 Unauthorized occurred
@@ -180,19 +177,16 @@ async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, t
                 )
                 return
                 
-        repos = results[0] if len(results) > 0 and isinstance(results[0], list) else []
+        profile = results[0] if len(results) > 0 and isinstance(results[0], dict) else {}
         events = results[1] if len(results) > 1 and isinstance(results[1], list) else []
         
-        if len(results) > 2 and isinstance(results[2], dict):
-            avatar_url = results[2].get("avatar_url", DEFAULT_AVATAR_URL)
+        if profile:
+            avatar_url = profile.get("avatar_url") or DEFAULT_AVATAR_URL
             await update_user_settings(telegram_id, {"avatar_url": avatar_url})
+            total_repos = profile.get("public_repos", 0) + profile.get("total_private_repos", 0)
 
-        total_repos = len(repos)
-        total_stars = sum(r.get("stargazers_count", 0) for r in repos)
-        total_forks = sum(r.get("forks_count", 0) for r in repos)
-        
-        if repos:
-            await cache_user_repositories(telegram_id, repos)
+        total_stars = user.get("total_stars", 0)
+        total_forks = user.get("total_forks", 0)
 
         if events:
             last_event = events[0]

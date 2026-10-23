@@ -75,11 +75,12 @@ async def repo_analytics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         await safe_edit_or_reply(update, "Session expired.")
         return
 
-    repos = await get_cached_repositories(telegram_id)
+    repos = context.user_data.get("session_repos")
     if not repos:
         client = GitHubAPIClient(token)
         try:
             repos = await client.list_repositories(page=1, per_page=100)
+            context.user_data["session_repos"] = repos
         except Exception as e:
             await safe_edit_or_reply(update, f"❌ Error listing repositories: {e}")
             return

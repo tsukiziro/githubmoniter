@@ -221,14 +221,13 @@ async def start_create_schedule(update: Update, context: ContextTypes.DEFAULT_TY
         await safe_edit_or_reply(update, "Session expired. Please reconnect your account.")
         return ConversationHandler.END
 
-    repos = await get_cached_repositories(telegram_id)
+    repos = context.user_data.get("session_repos")
     if not repos:
         client = GitHubAPIClient(token)
         try:
             live_repos = await client.list_repositories(page=1, per_page=100)
             if live_repos:
-                from bot.database.mongodb import cache_user_repositories
-                await cache_user_repositories(telegram_id, live_repos)
+                context.user_data["session_repos"] = live_repos
                 repos = live_repos
         except Exception as e:
             logger.error(f"Error fetching live repos for user {telegram_id}: {e}")
@@ -544,10 +543,20 @@ async def receive_weekly_planner(update: Update, context: ContextTypes.DEFAULT_T
     day_short = now_loc.strftime("%a")
     day_full = now_loc.strftime("%A")
 
-    repos = await get_cached_repositories(telegram_id)
-    repo_names = [r.get("full_name") for r in repos] if repos else [default_repo]
-    if not repo_names:
-        repo_names = [default_repo]
+    # Only connect/distribute repos that are actually scheduled or selected
+    user_schedules = await get_user_schedules(telegram_id)
+    scheduled_repo_set = set()
+    for s in user_schedules:
+        if s.get("repo"):
+            scheduled_repo_set.add(s["repo"])
+        m_plan = s.get("multi_repo_plan") or {}
+        for day_data in m_plan.values():
+            if isinstance(day_data, dict):
+                for r in day_data.get("repos", []):
+                    scheduled_repo_set.add(r)
+    if default_repo:
+        scheduled_repo_set.add(default_repo)
+    repo_names = list(scheduled_repo_set) if scheduled_repo_set else [default_repo]
 
     query = update.callback_query
     if query:
@@ -693,6 +702,16 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
             multi_repo_plan=multi_repo_plan,
             user_tz=tz_final
         )
+
+        # Connect only the scheduled repository in database cache
+        from bot.database.mongodb import cache_user_repositories
+        sched_repos = [{"name": repo.split('/')[-1], "full_name": repo}]
+        if multi_repo_plan:
+            for day_data in multi_repo_plan.values():
+                if isinstance(day_data, dict):
+                    for r_name in day_data.get("repos", []):
+                        sched_repos.append({"name": r_name.split('/')[-1], "full_name": r_name})
+        await cache_user_repositories(telegram_id, sched_repos, only_scheduled=True)
 
         if stype == "weekly_planner" and weekly_plan:
             mode_desc = f"📆 <b>Multi-Repo Weekly Planner ({sum(weekly_plan.values())} Commits/Week)</b>"

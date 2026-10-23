@@ -44,12 +44,13 @@ async def handle_incoming_file(update: Update, context: ContextTypes.DEFAULT_TYP
 
     suggested_name = context.user_data.get("suggested_filename", "file.txt")
 
-    # Fetch user repos to select
-    repos = await get_cached_repositories(telegram_id)
+    # Fetch user repos to select on-demand
+    repos = context.user_data.get("session_repos")
     if not repos:
         client = GitHubAPIClient(token)
         try:
             repos = await client.list_repositories(page=1, per_page=100)
+            context.user_data["session_repos"] = repos
         except Exception as e:
             await safe_edit_or_reply(update, f"❌ Error fetching repositories: {e}")
             return ConversationHandler.END
