@@ -20,15 +20,13 @@ async def show_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     username = user.get("github_username", "Unknown")
     auth_method = user.get("auth_method", "oauth").upper()
-    notifications = "Enabled 🔔" if user.get("notifications", True) else "Disabled 🔕"
     tz = user.get("timezone", "Asia/Kolkata")
     connected_at = format_user_datetime(user.get("connected_at", ""), tz)
 
     text = (
-        f"⚙️ <b>GITHUB GUARDIAN SETTINGS</b>\n\n"
+        f"⚙️ <b>ACCOUNT & TIMEZONE SETTINGS</b>\n\n"
         f"👤 <b>Connected Account:</b> @{username}\n"
         f"🔐 <b>Auth Method:</b> {auth_method}\n"
-        f"🔔 <b>Notifications:</b> {notifications}\n"
         f"🌐 <b>Timezone:</b> {tz}\n"
         f"📅 <b>Connected Since:</b> {connected_at}"
     )

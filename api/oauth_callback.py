@@ -73,14 +73,14 @@ async def github_oauth_callback(
                 dashboard_text = (
                     f"🎉 <b>Authentication Successful!</b>\n\n"
                     f"Connected as <b>@{username}</b> via GitHub OAuth.\n"
-                    f"You now have access to repository management, file commits, issues, and monitoring!"
+                    f"You can now set up automated commit schedules for your dedicated repository!"
                 )
                 try:
                     await bot_app.bot.send_message(
                         chat_id=telegram_id,
                         text=dashboard_text,
                         parse_mode="HTML",
-                        reply_markup=main_dashboard_keyboard(user.get("notifications", True))
+                        reply_markup=main_dashboard_keyboard()
                     )
                 except Exception as ex:
                     logger.error(f"Failed to send Telegram notification to user {telegram_id}: {ex}")

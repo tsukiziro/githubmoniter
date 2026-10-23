@@ -138,7 +138,7 @@ async def send_force_sub_prompt(update: Update, missing_channels: list):
     await safe_edit_or_reply(update, text=text, reply_markup=markup)
 
 async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, telegram_id: int, user: dict, token: str):
-    """Renders main dashboard for authenticated user with GitHub profile avatar photo."""
+    """Renders main dashboard for authenticated user focusing on Commit Scheduler."""
     # 1. Check Forced Channel Subscription
     is_joined, missing = await check_all_force_subs(context.bot, telegram_id)
     if not is_joined:
@@ -146,73 +146,43 @@ async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         return
 
     client = GitHubAPIClient(token)
-    
     username = user.get("github_username", "Unknown")
     auth_method = user.get("auth_method", "oauth").upper()
-    notifications = user.get("notifications", True)
-    notif_status = "ON" if notifications else "OFF"
     avatar_url = user.get("avatar_url") or DEFAULT_AVATAR_URL
-    
-    total_repos = 0
-    total_stars = 0
-    total_forks = 0
-    recent_activity = "No recent activity recorded."
-    
+
     try:
-        # Execute parallel lightweight requests: profile stats & user events
-        tasks = [
-            client.get_user_profile(),
-            client.get_user_events(username)
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Check if 401 Unauthorized occurred
-        for res in results:
-            if isinstance(res, GitHubAPIException) and getattr(res, "status_code", None) == 401:
-                oauth_url = generate_oauth_url(telegram_id)
-                await safe_edit_or_reply(
-                    update,
-                    text="❌ Your GitHub access token has expired or been revoked. Please reconnect your account.",
-                    reply_markup=auth_keyboard(oauth_url)
-                )
-                return
-                
-        profile = results[0] if len(results) > 0 and isinstance(results[0], dict) else {}
-        events = results[1] if len(results) > 1 and isinstance(results[1], list) else []
-        
-        if profile:
-            avatar_url = profile.get("avatar_url") or DEFAULT_AVATAR_URL
+        # Validate token with lightweight profile check
+        profile = await client.get_user_profile()
+        if profile and isinstance(profile, dict):
+            avatar_url = profile.get("avatar_url") or avatar_url
             await update_user_settings(telegram_id, {"avatar_url": avatar_url})
-            total_repos = profile.get("public_repos", 0) + profile.get("total_private_repos", 0)
-
-        total_stars = user.get("total_stars", 0)
-        total_forks = user.get("total_forks", 0)
-
-        if events:
-            last_event = events[0]
-            e_type = last_event.get("type", "Event")
-            e_repo = last_event.get("repo", {}).get("name", "")
-            recent_activity = f"{e_type} on {e_repo}"
-
+    except GitHubAPIException as ge:
+        if getattr(ge, "status_code", None) == 401:
+            oauth_url = generate_oauth_url(telegram_id)
+            await safe_edit_or_reply(
+                update,
+                text="❌ Your GitHub access token has expired or been revoked. Please reconnect your account.",
+                reply_markup=auth_keyboard(oauth_url)
+            )
+            return
     except Exception as e:
-        logger.warning(f"Error fetching dashboard metrics for user {telegram_id}: {e}")
+        logger.warning(f"Error checking profile for user {telegram_id}: {e}")
 
     schedules = await get_user_schedules(telegram_id)
     active_sched_count = sum(1 for s in schedules if s.get("status") == "active")
+    total_sched_count = len(schedules)
 
     dashboard_text = (
-        f"🐙 <b>GITHUB GUARDIAN DASHBOARD</b>\n\n"
-        f"👤 <b>Username:</b> @{username}\n"
+        f"🐙 <b>GITHUB COMMIT SCHEDULER</b>\n\n"
+        f"👤 <b>Connected As:</b> @{username}\n"
         f"🔐 <b>Auth:</b> {auth_method}\n"
-        f"📁 <b>Repositories:</b> {total_repos}\n"
-        f"⭐ <b>Total Stars:</b> {total_stars}\n"
-        f"🍴 <b>Total Forks:</b> {total_forks}\n\n"
-        f"📅 <b>Recent Activity:</b> {recent_activity}\n"
-        f"⏰ <b>Active Schedules:</b> {active_sched_count}\n"
-        f"🔔 <b>Monitoring:</b> {notif_status}"
+        f"⏰ <b>Active Schedules:</b> {active_sched_count} / {total_sched_count}\n"
+        f"🌐 <b>Timezone:</b> {user.get('timezone', 'Asia/Kolkata')}\n\n"
+        f"<i>Automated commits to your dedicated repository.\n"
+        f"Click <b>⏰ Commit Scheduler</b> to create a repository and set up your schedule!</i>"
     )
 
-    reply_markup = main_dashboard_keyboard(notifications)
+    reply_markup = main_dashboard_keyboard()
     eff_msg = update.effective_message
 
     if update.callback_query:
@@ -291,33 +261,28 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def guide_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Renders detailed user guide and feature overview."""
+    """Renders user guide for commit scheduler."""
     guide_text = (
-        "📖 <b>GITHUB GUARDIAN - USER GUIDE</b>\n\n"
-        "Welcome! <b>GitHub Guardian</b> helps you manage, monitor, and automate your GitHub repositories directly from Telegram.\n\n"
-        "1️⃣ <b>ACCOUNT AUTHENTICATION</b>\n"
-        "• <b>OAuth Flow:</b> Click '🔗 Connect with GitHub OAuth', authorize via browser.\n"
-        "• <b>PAT Flow:</b> Click '🔑 Use Personal Access Token', paste token. Your message is deleted instantly for security.\n\n"
-        "2️⃣ <b>📁 REPOSITORY MANAGEMENT</b>\n"
-        "• Run /repos or click <b>📁 Repositories</b> to view paginated repositories.\n"
-        "• View stars, forks, watchers, open issues, and default branch.\n"
-        "• Click <b>➕ Create Repo</b> to create public or private repositories.\n"
-        "• Delete repositories safely using confirmation modals.\n\n"
-        "3️⃣ <b>📤 PUSH FILES VIA TELEGRAM</b>\n"
-        "• Upload any document, text file, photo, or code file directly to chat!\n"
-        "• Select target repository, file path, branch, and commit message.\n"
-        "• Works for creating new files or updating existing files (handles SHA automatically).\n\n"
-        "4️⃣ <b>🟢 DEEP GREEN MODE & SCHEDULED COMMITS</b>\n"
-        "• Go to <b>⏰ Scheduler</b> ➔ <b>➕ New Schedule</b>.\n"
-        "• Select repository, file path (send /default for <code>ACTIVITY.md</code>), commit message, and content.\n"
-        "• Select <b>🟢 Deep Green Mode (20 Commits/Day)</b> to automatically push dynamic commits every 60 minutes to keep your contribution matrix green!\n"
-        "• View live 4-hour, 24-hour, and total commit execution stats anytime.\n\n"
-        "5️⃣ <b>🐛 ISSUES & COLLABORATORS</b>\n"
-        "• Select a repository ➔ Click <b>🐛 Issues</b> to create, close, reopen, or comment on issues.\n"
-        "• Click <b>👥 Collaborators</b> to invite users with custom roles (read, write, admin, triage) or remove collaborators.\n\n"
-        "6️⃣ <b>📊 TRAFFIC ANALYTICS & MONITORING</b>\n"
-        "• Click <b>📊 Analytics</b> to view views, unique visitors, clones, stargazers, and forks.\n"
-        "• Toggle real-time notifications under <b>⚙️ Settings</b> or main dashboard."
+        "📖 <b>GITHUB COMMIT SCHEDULER - USER GUIDE</b>\n\n"
+        "This bot is dedicated exclusively to <b>Automated GitHub Commit Scheduling</b>.\n"
+        "It will never touch, read, or track your personal repositories.\n\n"
+        "1️⃣ <b>CONNECT GITHUB</b>\n"
+        "• Connect securely via <b>OAuth</b> or your personal access token (<b>PAT</b>).\n\n"
+        "2️⃣ <b>CREATE SCHEDULE REPOSITORY</b>\n"
+        "• Click <b>⏰ Commit Scheduler</b> ➔ <b>➕ New Schedule</b>.\n"
+        "• You will be prompted to create a new dedicated GitHub repository.\n"
+        "• Choose whether your repository should be <b>Public</b> or <b>Private</b>.\n"
+        "• The bot creates this repository on GitHub automatically.\n\n"
+        "3️⃣ <b>CONFIGURE COMMIT SCHEDULE</b>\n"
+        "• Choose target file path (default: <code>ACTIVITY.md</code>).\n"
+        "• Enter commit message (default: <code>Update activity log</code>).\n"
+        "• Select frequency:\n"
+        "   - <b>Custom Commits / Day:</b> Specify commits/day (e.g. 5, 10, 24) and start time.\n"
+        "   - <b>Deep Green Mode:</b> 24 commits/day (1 every hour).\n"
+        "   - <b>Weekly Planner:</b> Set custom commits per day of the week.\n\n"
+        "4️⃣ <b>AUTOMATED EXECUTION</b>\n"
+        "• Commits are pushed automatically strictly to your dedicated schedule repository!\n"
+        "• Pause, resume, or delete any schedule anytime in the scheduler menu."
     )
 
     markup = InlineKeyboardMarkup([
