@@ -10,10 +10,11 @@ def auth_keyboard(oauth_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def main_dashboard_keyboard(notifications_on: bool = True) -> InlineKeyboardMarkup:
-    """Main dashboard keyboard focusing strictly on Commit Scheduler."""
+    """Main dashboard keyboard featuring Commit Scheduler and Free Achievements."""
     keyboard = [
         [
-            InlineKeyboardButton("⏰ Commit Scheduler", callback_data="nav_scheduler")
+            InlineKeyboardButton("⏰ Commit Scheduler", callback_data="nav_scheduler"),
+            InlineKeyboardButton("🏆 Free Achievements", callback_data="nav_achievements")
         ],
         [
             InlineKeyboardButton("⚙️ Settings", callback_data="nav_settings"),
@@ -50,6 +51,48 @@ def schedule_detail_keyboard(schedule_id: str, is_active: bool) -> InlineKeyboar
         ],
         [
             InlineKeyboardButton("🔙 Back to Scheduler", callback_data="nav_scheduler")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def achievements_menu_keyboard() -> InlineKeyboardMarkup:
+    """Interactive Achievement Selector."""
+    keyboard = [
+        [
+            InlineKeyboardButton("⚡ UNLOCK ALL (One-Click)", callback_data="ach_run_all")
+        ],
+        [
+            InlineKeyboardButton("🚀 Quickdraw", callback_data="ach_run:quickdraw"),
+            InlineKeyboardButton("🤠 YOLO", callback_data="ach_run:yolo")
+        ],
+        [
+            InlineKeyboardButton("👥 Pair Extraordinaire", callback_data="ach_run:pair"),
+            InlineKeyboardButton("🧠 Galaxy Brain", callback_data="ach_run:galaxy_brain")
+        ],
+        [
+            InlineKeyboardButton("🦈 Pull Shark (Bronze)", callback_data="ach_run:pull_shark"),
+            InlineKeyboardButton("❤️ Heart on Sleeve", callback_data="ach_run:heart")
+        ],
+        [
+            InlineKeyboardButton("👀 Public Sighting", callback_data="ach_run:public_sighting"),
+            InlineKeyboardButton("💬 First Interaction", callback_data="ach_run:first_interaction")
+        ],
+        [
+            InlineKeyboardButton("🌱 Open Source Heart", callback_data="ach_run:open_source_heart"),
+            InlineKeyboardButton("🌐 GitHub Pages", callback_data="ach_run:github_pages")
+        ],
+        [
+            InlineKeyboardButton("🔙 Main Dashboard", callback_data="main_menu")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def achievements_completed_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard shown when achievements finish."""
+    keyboard = [
+        [
+            InlineKeyboardButton("🏆 Unlock More Badges", callback_data="nav_achievements"),
+            InlineKeyboardButton("🔙 Main Dashboard", callback_data="main_menu")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)

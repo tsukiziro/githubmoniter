@@ -40,6 +40,10 @@ from bot.handlers.settings import (
     handle_disconnect_confirmation,
     change_tz_conv_handler
 )
+from bot.handlers.achievements import (
+    show_achievements_catalog,
+    handle_achievement_run
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +52,11 @@ async def post_init(app: Application):
     logger.info("Initializing MongoDB indexes & dropping legacy cache...")
     await MongoDB.init_indices()
     
-    # Register Telegram bot commands menu (focused exclusively on commit scheduler)
+    # Register Telegram bot commands menu (focused on commit scheduler & achievements)
     commands = [
-        BotCommand("start", "🚀 Open Commit Scheduler Dashboard"),
+        BotCommand("start", "🚀 Open Dashboard"),
         BotCommand("schedule", "⏰ Create or Manage Commit Schedules"),
+        BotCommand("achievements", "🏆 Unlock Free GitHub Badges"),
         BotCommand("settings", "⚙️ Timezone & Account Settings"),
         BotCommand("guide", "📖 User Guide & How It Works"),
         BotCommand("help", "💡 Quick Help")
@@ -113,6 +118,8 @@ async def build_application() -> Application:
     app.add_handler(CommandHandler("schedule", lambda u, c: show_scheduler_menu(u, c)))
     app.add_handler(CommandHandler("newsched", lambda u, c: show_scheduler_menu(u, c)))
     app.add_handler(CommandHandler("scheduler", lambda u, c: show_scheduler_menu(u, c)))
+    app.add_handler(CommandHandler("achievements", show_achievements_catalog))
+    app.add_handler(CommandHandler("badges", show_achievements_catalog))
     app.add_handler(CommandHandler("settings", lambda u, c: show_settings_menu(u, c)))
     app.add_handler(CommandHandler("guide", guide_command))
     app.add_handler(CommandHandler("help", guide_command))
@@ -128,6 +135,10 @@ async def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(main_menu_callback, pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(verify_sub_callback, pattern="^verify_sub$"))
     app.add_handler(CallbackQueryHandler(guide_command, pattern="^nav_guide$"))
+
+    # Free Achievements
+    app.add_handler(CallbackQueryHandler(show_achievements_catalog, pattern="^nav_achievements$"))
+    app.add_handler(CallbackQueryHandler(handle_achievement_run, pattern="^ach_run"))
 
     # Commit Scheduler
     app.add_handler(CallbackQueryHandler(show_scheduler_menu, pattern="^nav_scheduler$"))

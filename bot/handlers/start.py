@@ -173,13 +173,13 @@ async def render_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     total_sched_count = len(schedules)
 
     dashboard_text = (
-        f"🐙 <b>GITHUB COMMIT SCHEDULER</b>\n\n"
+        f"🐙 <b>GITHUB GUARDIAN DASHBOARD</b>\n\n"
         f"👤 <b>Connected As:</b> @{username}\n"
         f"🔐 <b>Auth:</b> {auth_method}\n"
         f"⏰ <b>Active Schedules:</b> {active_sched_count} / {total_sched_count}\n"
         f"🌐 <b>Timezone:</b> {user.get('timezone', 'Asia/Kolkata')}\n\n"
-        f"<i>Automated commits to your dedicated repository.\n"
-        f"Click <b>⏰ Commit Scheduler</b> to create a repository and set up your schedule!</i>"
+        f"<i>Automated commit schedules & free profile achievements!\n"
+        f"Select an option below to get started:</i>"
     )
 
     reply_markup = main_dashboard_keyboard()
@@ -261,28 +261,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def guide_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Renders user guide for commit scheduler."""
+    """Renders user guide for commit scheduler and free achievements."""
     guide_text = (
-        "📖 <b>GITHUB COMMIT SCHEDULER - USER GUIDE</b>\n\n"
-        "This bot is dedicated exclusively to <b>Automated GitHub Commit Scheduling</b>.\n"
-        "It will never touch, read, or track your personal repositories.\n\n"
+        "📖 <b>GITHUB GUARDIAN - USER GUIDE</b>\n\n"
         "1️⃣ <b>CONNECT GITHUB</b>\n"
         "• Connect securely via <b>OAuth</b> or your personal access token (<b>PAT</b>).\n\n"
-        "2️⃣ <b>CREATE SCHEDULE REPOSITORY</b>\n"
+        "2️⃣ <b>⏰ COMMIT SCHEDULER</b>\n"
         "• Click <b>⏰ Commit Scheduler</b> ➔ <b>➕ New Schedule</b>.\n"
-        "• You will be prompted to create a new dedicated GitHub repository.\n"
-        "• Choose whether your repository should be <b>Public</b> or <b>Private</b>.\n"
-        "• The bot creates this repository on GitHub automatically.\n\n"
-        "3️⃣ <b>CONFIGURE COMMIT SCHEDULE</b>\n"
-        "• Choose target file path (default: <code>ACTIVITY.md</code>).\n"
-        "• Enter commit message (default: <code>Update activity log</code>).\n"
-        "• Select frequency:\n"
-        "   - <b>Custom Commits / Day:</b> Specify commits/day (e.g. 5, 10, 24) and start time.\n"
-        "   - <b>Deep Green Mode:</b> 24 commits/day (1 every hour).\n"
-        "   - <b>Weekly Planner:</b> Set custom commits per day of the week.\n\n"
-        "4️⃣ <b>AUTOMATED EXECUTION</b>\n"
-        "• Commits are pushed automatically strictly to your dedicated schedule repository!\n"
-        "• Pause, resume, or delete any schedule anytime in the scheduler menu."
+        "• Prompts to create a dedicated repository (Public or Private).\n"
+        "• Configure daily count, start time, or 24/day Deep Green mode.\n"
+        "• Automated commits are pushed strictly to your dedicated repo.\n\n"
+        "3️⃣ <b>🏆 FREE PROFILE ACHIEVEMENTS</b>\n"
+        "• Click <b>🏆 Free Achievements</b> or send /achievements.\n"
+        "• Choose individual badges (Quickdraw, YOLO, Galaxy Brain, Pull Shark, etc.) or tap <b>⚡ UNLOCK ALL</b>.\n"
+        "• <b>Zero Extra Tokens:</b> Reuses your active connected session automatically.\n"
+        "• <b>Anti-Bot Shield:</b> Enforces humanized randomized pacing (2.5s–4.5s) between all operations to prevent bot detection and API rate limits.\n"
+        "• Badges register in your dedicated public <code>free-achievements</code> repo and reflect on your profile within minutes!"
     )
 
     markup = InlineKeyboardMarkup([
