@@ -86,6 +86,12 @@ def parse_weekly_planner_input(text: str) -> Dict[str, int]:
 # --- Scheduler Dashboard ---
 async def show_scheduler_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Displays scheduled commit jobs list and creation trigger."""
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
+
     telegram_id = update.effective_user.id
     token, user = await get_user_decrypted_token(telegram_id)
     if not token or not user:
@@ -731,6 +737,11 @@ async def receive_sched_tz_and_save(update: Update, context: ContextTypes.DEFAUL
 
 async def cancel_schedule_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancels schedule creation wizard."""
+    if update.callback_query:
+        try:
+            await update.callback_query.answer()
+        except Exception:
+            pass
     await safe_edit_or_reply(update, text="❌ Schedule creation cancelled.")
     await show_scheduler_menu(update, context)
     return ConversationHandler.END

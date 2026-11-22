@@ -307,6 +307,12 @@ async def create_commit_schedule(
     
     await save_schedule(sched_data)
     await add_job_to_scheduler(sched_data)
+
+    # If configured to start immediately, dispatch the initial commit in background
+    if (start_time == "now" or not start_time) and schedule_type in ["custom_daily", "deep_green", "weekly_planner"]:
+        import asyncio
+        asyncio.create_task(execute_scheduled_commit(schedule_id))
+
     return schedule_id
 
 async def pause_commit_schedule(schedule_id: str, telegram_id: int) -> bool:

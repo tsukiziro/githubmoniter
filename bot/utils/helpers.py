@@ -9,26 +9,43 @@ async def safe_edit_or_reply(update: Update, text: str, reply_markup=None, parse
     """
     Safely edits a Telegram message whether it is a photo message (caption), 
     text message, or sends a new message if editing fails.
+    Avoids unnecessary API failure roundtrips by detecting message media types first.
     """
     if update.callback_query:
         query = update.callback_query
-        try:
-            await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
-            return
-        except Exception:
+        msg = query.message
+        is_media = bool(msg and (msg.photo or msg.video or msg.animation or msg.document or msg.caption is not None or not msg.text))
+
+        if is_media:
             try:
                 await query.edit_message_caption(caption=text, parse_mode=parse_mode, reply_markup=reply_markup)
                 return
             except Exception:
                 try:
-                    await query.message.reply_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
-                    try:
-                        await query.delete_message()
-                    except Exception:
-                        pass
+                    await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
                     return
                 except Exception:
                     pass
+        else:
+            try:
+                await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+                return
+            except Exception:
+                try:
+                    await query.edit_message_caption(caption=text, parse_mode=parse_mode, reply_markup=reply_markup)
+                    return
+                except Exception:
+                    pass
+
+        try:
+            await query.message.reply_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+            try:
+                await query.delete_message()
+            except Exception:
+                pass
+            return
+        except Exception:
+            pass
 
     if update.effective_message:
         await update.effective_message.reply_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
