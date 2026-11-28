@@ -703,7 +703,7 @@
           <div class="brand-sub">Commit Scheduler Mini App</div>
         </div>
       </div>
-      <div id="userPill" class="user-pill">Loading...</div>
+      <div id="userPill" class="user-pill" style="cursor:pointer;" onclick="switchTab('settings')">Loading...</div>
     </div>
 
     <!-- Not Connected View -->
@@ -923,7 +923,28 @@
       <!-- TAB 4: Timezone & Settings -->
       <div id="panelSettings" class="hidden">
         <div class="card">
-          <div class="card-title"><span>👤 Connected Account</span></div>
+          <div class="card-title">
+            <span>👥 Connected GitHub Accounts</span>
+            <span class="muted" id="accountsCountLabel">1 / 2</span>
+          </div>
+          <div id="accountsList" style="display:flex; flex-direction:column; gap:8px; margin-bottom:10px;"></div>
+
+          <div id="addSecondAccountBox" class="hidden" style="background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:11px;">
+            <div style="font-size:12px; font-weight:700; margin-bottom:6px;">➕ Add 2nd GitHub Account (Max 2)</div>
+            <a id="addAccountOauthBtn" href="#" class="btn btn-sm btn-blue" style="width:100%; text-decoration:none; margin-bottom:8px;">🔗 Connect 2nd Account via OAuth</a>
+            <div class="input-row">
+              <input type="text" id="addPatInput" placeholder="Or paste Personal Access Token (ghp_...)" />
+              <button type="button" class="btn btn-sm" id="addPatBtn" onclick="connectPatAccount()">Add</button>
+            </div>
+          </div>
+
+          <div id="maxAccountsNote" class="hidden muted" style="text-align:center; padding-top:4px;">
+            ✅ Maximum 2 GitHub accounts connected. Remove one to add another.
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span>👤 Active Account</span></div>
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
             <span class="muted">GitHub Username</span>
             <strong id="setUsername">—</strong>
@@ -1518,12 +1539,14 @@
           document.getElementById("mainView").classList.add("hidden");
           return;
         }
-        document.getElementById("userPill").textContent = `@${data.github_username}`;
+        const accCount = (data.accounts || []).length;
+        document.getElementById("userPill").textContent = accCount > 1 ? `@${data.github_username} (${accCount}/2)` : `@${data.github_username}`;
         document.getElementById("timezoneInput").value = data.timezone || "Asia/Kolkata";
         document.getElementById("settingsTzInput").value = data.timezone || "Asia/Kolkata";
         document.getElementById("setUsername").textContent = `@${data.github_username}`;
         document.getElementById("setAuthMethod").textContent = data.auth_method || "OAUTH";
         document.getElementById("settingsNotifToggle").checked = data.notifications !== false;
+        renderAccounts(data.accounts || [], data.max_accounts || 2, data.oauth_url || "#");
         document.getElementById("notConnectedView").classList.add("hidden");
         document.getElementById("mainView").classList.remove("hidden");
         state.schedules = data.schedules || [];
@@ -1652,12 +1675,108 @@
       }
     }
 
-    async function disconnectAccount() {
-      if (!confirm("Disconnect your GitHub account and stop all active schedules?")) return;
+    function renderAccounts(accounts, maxAcc, oauthUrl) {
+      document.getElementById("accountsCountLabel").textContent = `${accounts.length} / ${maxAcc}`;
+      const listEl = document.getElementById("accountsList");
+      listEl.innerHTML = accounts.map(a => `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; background:var(--bg); border:1px solid ${a.is_active ? "rgba(57,211,83,0.4)" : "var(--border)"}; border-radius:10px; padding:9px 10px;">
+          <div style="display:flex; align-items:center; gap:8px; min-width:0;">
+            ${a.avatar_url ? `<img src="${a.avatar_url}" style="width:28px; height:28px; border-radius:50%;" />` : `<span style="font-size:18px;">🐙</span>`}
+            <div style="min-width:0;">
+              <div style="font-size:13px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">@${a.github_username}</div>
+              <div class="muted">${a.auth_method}</div>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+            ${a.is_active
+              ? `<span class="badge badge-active">● Active</span>`
+              : `<button type="button" class="btn btn-sm btn-blue" onclick="switchAccount('${a.github_username}')">Switch</button>`
+            }
+            <button type="button" class="btn btn-sm btn-danger" onclick="removeAccount('${a.github_username}')">✕</button>
+          </div>
+        </div>
+      `).join("");
+
+      const addBox = document.getElementById("addSecondAccountBox");
+      const maxNote = document.getElementById("maxAccountsNote");
+      if (accounts.length < maxAcc) {
+        document.getElementById("addAccountOauthBtn").href = oauthUrl;
+        addBox.classList.remove("hidden");
+        maxNote.classList.add("hidden");
+      } else {
+        addBox.classList.add("hidden");
+        maxNote.classList.remove("hidden");
+      }
+    }
+
+    async function switchAccount(username) {
+      haptic("medium");
+      try {
+        await api("/api/miniapp/accounts/switch", {
+          method: "POST",
+          body: JSON.stringify({ github_username: username })
+        });
+        state.reposLoaded = false;
+        state.statsLoaded = false;
+        showToast(`🔄 Switched to @${username}`);
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    async function connectPatAccount() {
+      const inp = document.getElementById("addPatInput");
+      const tok = inp.value.trim();
+      if (!tok) {
+        showToast("Paste a GitHub Personal Access Token");
+        return;
+      }
+      const btn = document.getElementById("addPatBtn");
+      btn.disabled = true;
+      try {
+        const res = await api("/api/miniapp/accounts/pat", {
+          method: "POST",
+          body: JSON.stringify({ token: tok })
+        });
+        inp.value = "";
+        state.reposLoaded = false;
+        state.statsLoaded = false;
+        haptic("medium");
+        showToast(`✅ Connected @${res.github_username}`);
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function removeAccount(username) {
+      if (!confirm(`Remove @${username} and stop its schedules?`)) return;
       haptic("heavy");
       try {
-        await api("/api/miniapp/disconnect", { method: "POST" });
-        showToast("🔌 Account disconnected");
+        await api("/api/miniapp/disconnect", {
+          method: "POST",
+          body: JSON.stringify({ github_username: username })
+        });
+        state.reposLoaded = false;
+        state.statsLoaded = false;
+        showToast(`🔌 Removed @${username}`);
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    async function disconnectAccount() {
+      if (!confirm("Disconnect ALL GitHub accounts and stop all active schedules?")) return;
+      haptic("heavy");
+      try {
+        await api("/api/miniapp/disconnect", { method: "POST", body: JSON.stringify({}) });
+        state.reposLoaded = false;
+        state.statsLoaded = false;
+        showToast("🔌 All accounts disconnected");
         await loadMe();
       } catch (err) {
         showToast("❌ " + err.message);

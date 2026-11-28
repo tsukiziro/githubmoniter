@@ -60,6 +60,28 @@ class MongoDB:
 
 # Database Helper Functions
 
+MAX_GITHUB_ACCOUNTS = 2
+
+
+def normalize_user_accounts(user: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Returns normalized list of connected GitHub accounts (supports legacy single-account docs)."""
+    if not user:
+        return []
+    accounts = user.get("accounts")
+    if isinstance(accounts, list) and len(accounts) > 0:
+        return list(accounts)
+    if user.get("github_username") and user.get("encrypted_token"):
+        return [{
+            "github_id": user.get("github_id"),
+            "github_username": user.get("github_username"),
+            "encrypted_token": user.get("encrypted_token"),
+            "auth_method": user.get("auth_method", "oauth"),
+            "avatar_url": user.get("avatar_url", ""),
+            "connected_at": user.get("connected_at", datetime.now(timezone.utc).isoformat()),
+        }]
+    return []
+
+
 # --- User Management ---
 async def save_user(
     telegram_id: int,
@@ -67,27 +89,127 @@ async def save_user(
     github_username: str,
     encrypted_token: str,
     auth_method: str = "oauth",
-    tz: str = "Asia/Kolkata"
+    tz: str = "Asia/Kolkata",
+    avatar_url: str = "",
 ) -> Dict[str, Any]:
     db = MongoDB.get_db()
+    existing = await db.users.find_one({"telegram_id": telegram_id})
+    accounts = normalize_user_accounts(existing)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    new_entry = {
+        "github_id": github_id,
+        "github_username": github_username,
+        "encrypted_token": encrypted_token,
+        "auth_method": auth_method,
+        "avatar_url": avatar_url,
+        "connected_at": now_iso,
+    }
+
+    idx = next(
+        (
+            i for i, a in enumerate(accounts)
+            if a.get("github_id") == github_id
+            or (a.get("github_username") or "").lower() == github_username.lower()
+        ),
+        None,
+    )
+
+    if idx is not None:
+        # Refresh existing connected account
+        new_entry["connected_at"] = accounts[idx].get("connected_at", now_iso)
+        if not avatar_url and accounts[idx].get("avatar_url"):
+            new_entry["avatar_url"] = accounts[idx]["avatar_url"]
+        accounts[idx] = new_entry
+    else:
+        if len(accounts) >= MAX_GITHUB_ACCOUNTS:
+            raise ValueError(
+                f"Maximum {MAX_GITHUB_ACCOUNTS} GitHub accounts allowed per Telegram account. Remove one first."
+            )
+        accounts.append(new_entry)
+
     user_data = {
         "telegram_id": telegram_id,
         "github_id": github_id,
         "github_username": github_username,
         "encrypted_token": encrypted_token,
         "auth_method": auth_method,
-        "connected_at": datetime.now(timezone.utc).isoformat(),
-        "timezone": tz,
-        "notifications": True,
-        "updated_at": datetime.now(timezone.utc).isoformat()
+        "avatar_url": new_entry["avatar_url"],
+        "accounts": accounts,
+        "connected_at": existing.get("connected_at", now_iso) if existing else now_iso,
+        "timezone": existing.get("timezone", tz) if existing else tz,
+        "notifications": existing.get("notifications", True) if existing else True,
+        "updated_at": now_iso,
     }
-    
+
     await db.users.update_one(
         {"telegram_id": telegram_id},
         {"$set": user_data},
-        upsert=True
+        upsert=True,
     )
     return user_data
+
+
+async def switch_active_account(telegram_id: int, github_username: str) -> Optional[Dict[str, Any]]:
+    """Switches the user's active GitHub account among their connected accounts."""
+    db = MongoDB.get_db()
+    user = await db.users.find_one({"telegram_id": telegram_id})
+    accounts = normalize_user_accounts(user)
+    target = next(
+        (a for a in accounts if (a.get("github_username") or "").lower() == github_username.lower()),
+        None,
+    )
+    if not target:
+        return None
+
+    updates = {
+        "github_id": target.get("github_id"),
+        "github_username": target.get("github_username"),
+        "encrypted_token": target.get("encrypted_token"),
+        "auth_method": target.get("auth_method", "oauth"),
+        "avatar_url": target.get("avatar_url", ""),
+        "accounts": accounts,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.update_one({"telegram_id": telegram_id}, {"$set": updates})
+    return await db.users.find_one({"telegram_id": telegram_id})
+
+
+async def remove_github_account(telegram_id: int, github_username: str) -> Dict[str, Any]:
+    """Removes a specific GitHub account (and its schedules). Promotes remaining account or deletes user."""
+    db = MongoDB.get_db()
+    user = await db.users.find_one({"telegram_id": telegram_id})
+    accounts = normalize_user_accounts(user)
+    remaining = [
+        a for a in accounts if (a.get("github_username") or "").lower() != github_username.lower()
+    ]
+
+    # Delete schedules belonging to that GitHub account
+    await db.schedules.delete_many({
+        "telegram_id": telegram_id,
+        "$or": [
+            {"github_username": {"$regex": f"^{github_username}$", "$options": "i"}},
+            {"repo": {"$regex": f"^{github_username}/", "$options": "i"}},
+        ],
+    })
+
+    if not remaining:
+        await delete_user(telegram_id)
+        return {"remaining": 0, "user": None}
+
+    active = remaining[0]
+    updates = {
+        "github_id": active.get("github_id"),
+        "github_username": active.get("github_username"),
+        "encrypted_token": active.get("encrypted_token"),
+        "auth_method": active.get("auth_method", "oauth"),
+        "avatar_url": active.get("avatar_url", ""),
+        "accounts": remaining,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.update_one({"telegram_id": telegram_id}, {"$set": updates})
+    updated_user = await db.users.find_one({"telegram_id": telegram_id})
+    return {"remaining": len(remaining), "user": updated_user}
 
 async def get_user(telegram_id: int) -> Optional[Dict[str, Any]]:
     db = MongoDB.get_db()

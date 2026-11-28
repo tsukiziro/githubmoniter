@@ -11,7 +11,13 @@ from fastapi import APIRouter, Request, HTTPException, Header, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from bot.services.auth_service import get_user_decrypted_token, generate_oauth_url, disconnect_user_account
+from bot.services.auth_service import (
+    get_user_decrypted_token,
+    generate_oauth_url,
+    disconnect_user_account,
+    authenticate_with_pat,
+    list_connected_accounts,
+)
 from bot.services.github_api import GitHubAPIClient, GitHubAPIException
 from bot.services.scheduler_service import (
     create_commit_schedule,
@@ -22,7 +28,13 @@ from bot.services.scheduler_service import (
     get_scheduler,
     _remove_all_jobs_for_schedule,
 )
-from bot.database.mongodb import get_user_schedules, update_user_settings, MongoDB
+from bot.database.mongodb import (
+    get_user_schedules,
+    update_user_settings,
+    switch_active_account,
+    MAX_GITHUB_ACCOUNTS,
+    MongoDB,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +135,7 @@ async def miniapp_me(x_telegram_init_data: str = Header(None, alias="X-Telegram-
         }
 
     schedules = await get_user_schedules(telegram_id)
+    accounts = await list_connected_accounts(telegram_id)
     return {
         "connected": True,
         "telegram_id": telegram_id,
@@ -131,6 +144,9 @@ async def miniapp_me(x_telegram_init_data: str = Header(None, alias="X-Telegram-
         "auth_method": user.get("auth_method", "oauth").upper(),
         "timezone": user.get("timezone", "Asia/Kolkata"),
         "notifications": user.get("notifications", True),
+        "accounts": accounts,
+        "max_accounts": MAX_GITHUB_ACCOUNTS,
+        "oauth_url": generate_oauth_url(telegram_id),
         "schedules": [serialize_schedule(s) for s in schedules],
     }
 
@@ -276,6 +292,7 @@ async def miniapp_create_schedule(
         weekly_plan=weekly_plan,
         user_tz=tz,
         auto_shuffle_weekly=body.auto_shuffle_weekly,
+        github_username=username,
     )
 
     schedules = await get_user_schedules(telegram_id)
@@ -541,20 +558,83 @@ async def miniapp_update_settings(
     }
 
 
-@router.post("/api/miniapp/disconnect")
-async def miniapp_disconnect(x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data")):
-    """Disconnects GitHub account, stops all schedules, and deletes user credentials."""
+class ConnectPatRequest(BaseModel):
+    token: str = Field(..., min_length=10)
+
+
+class SwitchAccountRequest(BaseModel):
+    github_username: str = Field(..., min_length=1)
+
+
+class DisconnectAccountRequest(BaseModel):
+    github_username: Optional[str] = None
+
+
+@router.post("/api/miniapp/accounts/pat")
+async def miniapp_connect_pat(
+    body: ConnectPatRequest,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Connects a GitHub account (up to max 2) using a Personal Access Token."""
     tg_user = verify_telegram_init_data(x_telegram_init_data)
     telegram_id = int(tg_user["id"])
 
+    try:
+        user_doc = await authenticate_with_pat(telegram_id, body.token.strip())
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to connect account: {e}")
+
+    return {
+        "ok": True,
+        "github_username": user_doc.get("github_username"),
+        "accounts": await list_connected_accounts(telegram_id),
+    }
+
+
+@router.post("/api/miniapp/accounts/switch")
+async def miniapp_switch_account(
+    body: SwitchAccountRequest,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Switches the active GitHub account for this Telegram user."""
+    tg_user = verify_telegram_init_data(x_telegram_init_data)
+    telegram_id = int(tg_user["id"])
+
+    updated = await switch_active_account(telegram_id, body.github_username.strip())
+    if not updated:
+        raise HTTPException(status_code=404, detail="GitHub account not found.")
+
+    return {
+        "ok": True,
+        "github_username": updated.get("github_username"),
+        "accounts": await list_connected_accounts(telegram_id),
+    }
+
+
+@router.post("/api/miniapp/disconnect")
+async def miniapp_disconnect(
+    body: Optional[DisconnectAccountRequest] = None,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Disconnects a specific GitHub account (or all accounts) and stops its scheduled jobs."""
+    tg_user = verify_telegram_init_data(x_telegram_init_data)
+    telegram_id = int(tg_user["id"])
+
+    target_user = body.github_username.strip() if (body and body.github_username) else None
     schedules = await get_user_schedules(telegram_id)
     scheduler = get_scheduler()
-    for s in schedules:
-        _remove_all_jobs_for_schedule(scheduler, s["schedule_id"])
 
-    await disconnect_user_account(telegram_id)
+    for s in schedules:
+        owner = (s.get("github_username") or (s["repo"].split("/")[0] if "/" in s.get("repo", "") else "")).lower()
+        if not target_user or owner == target_user.lower():
+            _remove_all_jobs_for_schedule(scheduler, s["schedule_id"])
+
+    await disconnect_user_account(telegram_id, github_username=target_user)
     return {
         "ok": True,
         "oauth_url": generate_oauth_url(telegram_id),
+        "accounts": await list_connected_accounts(telegram_id),
     }
 

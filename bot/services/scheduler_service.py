@@ -134,7 +134,8 @@ async def execute_scheduled_commit(schedule_id: str, mode: Optional[str] = None)
         return
 
     telegram_id = sched["telegram_id"]
-    token, user = await get_user_decrypted_token(telegram_id)
+    sched_account = sched.get("github_username") or (sched["repo"].split("/")[0] if "/" in sched.get("repo", "") else None)
+    token, user = await get_user_decrypted_token(telegram_id, github_username=sched_account)
     if not token or not user:
         logger.error(f"User {telegram_id} not authenticated for scheduled commit {schedule_id}.")
         return
@@ -394,6 +395,7 @@ async def create_commit_schedule(
     multi_repo_plan: Optional[Dict[str, Any]] = None,
     user_tz: str = "Asia/Kolkata",
     auto_shuffle_weekly: bool = False,
+    github_username: Optional[str] = None,
 ) -> str:
     import uuid
     schedule_id = f"sched_{uuid.uuid4().hex[:10]}"
@@ -409,6 +411,7 @@ async def create_commit_schedule(
     sched_data = {
         "schedule_id": schedule_id,
         "telegram_id": telegram_id,
+        "github_username": github_username or (repo.split("/")[0] if "/" in repo else ""),
         "repo": repo,
         "file_path": file_path,
         "commit_message": commit_message,

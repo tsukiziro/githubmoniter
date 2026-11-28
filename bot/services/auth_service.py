@@ -6,7 +6,14 @@ import logging
 from typing import Optional, Tuple, Dict, Any
 import httpx
 from bot.services.encryption import encrypt_token, decrypt_token
-from bot.database.mongodb import save_user, get_user, delete_user
+from bot.database.mongodb import (
+    save_user,
+    get_user,
+    delete_user,
+    normalize_user_accounts,
+    switch_active_account,
+    remove_github_account,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +121,9 @@ async def complete_oauth_login(telegram_id: int, access_token: str) -> Dict[str,
         github_id=github_id,
         github_username=github_username,
         encrypted_token=encrypted,
-        auth_method="oauth"
+        auth_method="oauth",
+        avatar_url=avatar_url,
     )
-    from bot.database.mongodb import update_user_settings
-    await update_user_settings(telegram_id, {"avatar_url": avatar_url})
-    user_doc["avatar_url"] = avatar_url
     return user_doc
 
 async def authenticate_with_pat(telegram_id: int, pat: str) -> Dict[str, Any]:
@@ -134,25 +139,60 @@ async def authenticate_with_pat(telegram_id: int, pat: str) -> Dict[str, Any]:
         github_id=github_id,
         github_username=github_username,
         encrypted_token=encrypted,
-        auth_method="pat"
+        auth_method="pat",
+        avatar_url=avatar_url,
     )
-    from bot.database.mongodb import update_user_settings
-    await update_user_settings(telegram_id, {"avatar_url": avatar_url})
-    user_doc["avatar_url"] = avatar_url
     return user_doc
 
-async def get_user_decrypted_token(telegram_id: int) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """Retrieves user document and decrypted token."""
+async def get_user_decrypted_token(
+    telegram_id: int,
+    github_username: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Retrieves user document and decrypted token (for active account or a specific github_username)."""
     user = await get_user(telegram_id)
-    if not user or not user.get("encrypted_token"):
+    if not user:
+        return None, None
+
+    encrypted_tok = user.get("encrypted_token")
+    if github_username:
+        accounts = normalize_user_accounts(user)
+        match = next(
+            (a for a in accounts if (a.get("github_username") or "").lower() == github_username.lower()),
+            None,
+        )
+        if match and match.get("encrypted_token"):
+            encrypted_tok = match["encrypted_token"]
+
+    if not encrypted_tok:
         return None, None
     try:
-        token = decrypt_token(user["encrypted_token"])
+        token = decrypt_token(encrypted_tok)
         return token, user
     except Exception as e:
         logger.error(f"Failed to decrypt token for user {telegram_id}: {e}")
         return None, user
 
-async def disconnect_user_account(telegram_id: int) -> bool:
-    """Disconnects account and deletes stored tokens & data."""
+async def list_connected_accounts(telegram_id: int) -> list:
+    """Returns sanitized list of connected GitHub accounts (max 2) for a Telegram user."""
+    user = await get_user(telegram_id)
+    if not user:
+        return []
+    active_name = (user.get("github_username") or "").lower()
+    accounts = normalize_user_accounts(user)
+    return [
+        {
+            "github_username": a.get("github_username", ""),
+            "auth_method": (a.get("auth_method") or "oauth").upper(),
+            "avatar_url": a.get("avatar_url", ""),
+            "connected_at": a.get("connected_at", ""),
+            "is_active": (a.get("github_username") or "").lower() == active_name,
+        }
+        for a in accounts
+    ]
+
+async def disconnect_user_account(telegram_id: int, github_username: Optional[str] = None) -> bool:
+    """Disconnects a specific GitHub account or all accounts if github_username is omitted."""
+    if github_username:
+        await remove_github_account(telegram_id, github_username)
+        return True
     return await delete_user(telegram_id)
