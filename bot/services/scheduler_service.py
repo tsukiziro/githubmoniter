@@ -43,13 +43,34 @@ async def init_scheduler() -> AsyncIOScheduler:
         
     return scheduler
 
-async def execute_scheduled_commit(schedule_id: str):
+def get_mode_states(sched: Dict[str, Any]) -> tuple[bool, bool]:
+    """Returns (weekly_active, deep_green_active) supporting both new dual-state and legacy docs."""
+    if "weekly_active" in sched or "deep_green_active" in sched:
+        return bool(sched.get("weekly_active", False)), bool(sched.get("deep_green_active", False))
+    is_active = sched.get("status") == "active"
+    if sched.get("schedule_type") == "deep_green":
+        return False, is_active
+    return is_active, False
+
+
+async def execute_scheduled_commit(schedule_id: str, mode: Optional[str] = None):
     """Callback function executed by APScheduler to push a scheduled file commit to GitHub."""
-    logger.info(f"Executing scheduled commit for schedule_id: {schedule_id}")
+    logger.info(f"Executing scheduled commit for schedule_id: {schedule_id} (mode={mode})")
     db = MongoDB.get_db()
     sched = await db.schedules.find_one({"schedule_id": schedule_id})
-    if not sched or sched.get("status") != "active":
-        logger.warning(f"Schedule {schedule_id} inactive or missing. Skipping.")
+    if not sched:
+        logger.warning(f"Schedule {schedule_id} missing. Skipping.")
+        return
+
+    weekly_active, deep_green_active = get_mode_states(sched)
+    if mode == "weekly_planner" and not weekly_active:
+        logger.info(f"Weekly mode paused for {schedule_id}. Skipping.")
+        return
+    if mode == "deep_green" and not deep_green_active:
+        logger.info(f"Deep Green mode paused for {schedule_id}. Skipping.")
+        return
+    if mode is None and sched.get("status") != "active":
+        logger.warning(f"Schedule {schedule_id} inactive. Skipping.")
         return
 
     telegram_id = sched["telegram_id"]
@@ -67,8 +88,9 @@ async def execute_scheduled_commit(schedule_id: str):
     day_name = datetime.now(loc_tz).strftime("%a")
     multi_plan = sched.get("multi_repo_plan")
 
+    effective_mode = mode or sched.get("schedule_type")
     # Respect weekly_planner 0-commit days
-    if sched.get("schedule_type") == "weekly_planner" and isinstance(sched.get("weekly_plan"), dict):
+    if effective_mode == "weekly_planner" and isinstance(sched.get("weekly_plan"), dict):
         target_for_today = sched["weekly_plan"].get(day_name, 0)
         if target_for_today <= 0:
             logger.info(f"Schedule {schedule_id} has 0 commits configured for {day_name}. Skipping.")
@@ -201,78 +223,81 @@ async def execute_scheduled_commit(schedule_id: str):
     except Exception as e:
         logger.error(f"Scheduled commit execution failed for {schedule_id}: {e}")
 
+def _remove_all_jobs_for_schedule(scheduler: AsyncIOScheduler, schedule_id: str):
+    """Removes legacy and mode-specific APScheduler jobs for a schedule."""
+    for job_id in (schedule_id, f"{schedule_id}__weekly", f"{schedule_id}__deep_green"):
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+
+
 async def add_job_to_scheduler(sched: Dict[str, Any]):
+    from apscheduler.triggers.interval import IntervalTrigger
     scheduler = get_scheduler()
     schedule_id = sched["schedule_id"]
-    
-    # Remove existing job if present
-    if scheduler.get_job(schedule_id):
-        scheduler.remove_job(schedule_id)
-        
-    cron_expr = sched.get("cron_expression")
-    interval_mins = sched.get("interval_minutes")
-    start_time_str = sched.get("start_time")
-    stype = sched.get("schedule_type")
-    weekly_plan = sched.get("weekly_plan")
+
+    _remove_all_jobs_for_schedule(scheduler, schedule_id)
+
     tz_str = sched.get("timezone", "Asia/Kolkata")
     try:
         tz = pytz.timezone(tz_str)
     except Exception:
         tz = pytz.timezone("Asia/Kolkata")
 
-    if stype == "weekly_planner" and isinstance(weekly_plan, dict):
-        # Calculate today's interval dynamically (keep 60m check even on 0-commit days so tomorrow runs automatically)
-        day_name = datetime.now(tz).strftime("%a")
-        target_today = weekly_plan.get(day_name, 5)
-        if target_today > 0:
-            interval_mins = max(1, int((24 * 60) / target_today))
-        else:
-            interval_mins = 60
+    weekly_active, deep_green_active = get_mode_states(sched)
+    weekly_plan = sched.get("weekly_plan")
+    cron_expr = sched.get("cron_expression")
+    stype = sched.get("schedule_type")
+    start_time_str = sched.get("start_time")
 
-    if interval_mins:
-        from apscheduler.triggers.interval import IntervalTrigger
-        start_date = None
-        if start_time_str and start_time_str != "now":
-            try:
-                h, m = map(int, start_time_str.split(":"))
-                now_local = datetime.now(tz)
-                start_local = now_local.replace(hour=h, minute=m, second=0, microsecond=0)
-                if start_local < now_local:
-                    start_local = now_local
-                start_date = start_local
-            except Exception as e:
-                logger.warning(f"Could not parse start_time '{start_time_str}': {e}")
-
-        trigger = IntervalTrigger(minutes=int(interval_mins), timezone=tz, start_date=start_date)
-        scheduler.add_job(
-            execute_scheduled_commit,
-            trigger=trigger,
-            id=schedule_id,
-            args=[schedule_id],
-            replace_existing=True
-        )
-        logger.info(f"Job {schedule_id} added with interval of {interval_mins} minutes (start_time={start_time_str}).")
-    elif cron_expr:
-        parts = cron_expr.split()
-        if len(parts) == 5:
-            trigger = CronTrigger(
-                minute=parts[0],
-                hour=parts[1],
-                day=parts[2],
-                month=parts[3],
-                day_of_week=parts[4],
-                timezone=tz
-            )
+    # 1. Schedule Weekly Planner job independently if weekly_active
+    if weekly_active:
+        if isinstance(weekly_plan, dict):
+            day_name = datetime.now(tz).strftime("%a")
+            target_today = weekly_plan.get(day_name, 5)
+            w_interval = max(1, int((24 * 60) / target_today)) if target_today > 0 else 60
             scheduler.add_job(
                 execute_scheduled_commit,
-                trigger=trigger,
-                id=schedule_id,
-                args=[schedule_id],
-                replace_existing=True
+                trigger=IntervalTrigger(minutes=w_interval, timezone=tz),
+                id=f"{schedule_id}__weekly",
+                args=[schedule_id, "weekly_planner"],
+                replace_existing=True,
             )
-            logger.info(f"Job {schedule_id} added to APScheduler with trigger '{cron_expr}'.")
-        else:
-            logger.error(f"Invalid cron expression '{cron_expr}' for schedule {schedule_id}.")
+            logger.info(f"Weekly job {schedule_id}__weekly added ({w_interval}m interval).")
+        elif sched.get("interval_minutes"):
+            w_interval = int(sched["interval_minutes"])
+            scheduler.add_job(
+                execute_scheduled_commit,
+                trigger=IntervalTrigger(minutes=w_interval, timezone=tz),
+                id=f"{schedule_id}__weekly",
+                args=[schedule_id, "weekly_planner"],
+                replace_existing=True,
+            )
+            logger.info(f"Legacy/Weekly job {schedule_id}__weekly added ({w_interval}m interval).")
+        elif cron_expr:
+            parts = cron_expr.split()
+            if len(parts) == 5:
+                trigger = CronTrigger(
+                    minute=parts[0], hour=parts[1], day=parts[2],
+                    month=parts[3], day_of_week=parts[4], timezone=tz
+                )
+                scheduler.add_job(
+                    execute_scheduled_commit,
+                    trigger=trigger,
+                    id=f"{schedule_id}__weekly",
+                    args=[schedule_id, "weekly_planner"],
+                    replace_existing=True,
+                )
+
+    # 2. Schedule Deep Green job independently if deep_green_active (24 commits/day = 60m)
+    if deep_green_active:
+        scheduler.add_job(
+            execute_scheduled_commit,
+            trigger=IntervalTrigger(minutes=60, timezone=tz),
+            id=f"{schedule_id}__deep_green",
+            args=[schedule_id, "deep_green"],
+            replace_existing=True,
+        )
+        logger.info(f"Deep Green job {schedule_id}__deep_green added (60m interval).")
 
 async def create_commit_schedule(
     telegram_id: int,
@@ -292,6 +317,9 @@ async def create_commit_schedule(
     import uuid
     schedule_id = f"sched_{uuid.uuid4().hex[:10]}"
     
+    weekly_active = (schedule_type != "deep_green")
+    deep_green_active = (schedule_type == "deep_green")
+
     sched_data = {
         "schedule_id": schedule_id,
         "telegram_id": telegram_id,
@@ -300,6 +328,8 @@ async def create_commit_schedule(
         "commit_message": commit_message,
         "content": content,
         "schedule_type": schedule_type,
+        "weekly_active": weekly_active,
+        "deep_green_active": deep_green_active,
         "cron_expression": cron_expression or "",
         "interval_minutes": interval_minutes,
         "commits_per_day": commits_per_day,
@@ -318,28 +348,41 @@ async def create_commit_schedule(
     # If configured to start immediately, dispatch the initial commit in background
     if (start_time == "now" or not start_time) and schedule_type in ["custom_daily", "deep_green", "weekly_planner"]:
         import asyncio
-        asyncio.create_task(execute_scheduled_commit(schedule_id))
+        asyncio.create_task(execute_scheduled_commit(schedule_id, mode=schedule_type))
 
     return schedule_id
 
 async def pause_commit_schedule(schedule_id: str, telegram_id: int) -> bool:
     scheduler = get_scheduler()
-    if scheduler.get_job(schedule_id):
-        scheduler.pause_job(schedule_id)
-    return await update_schedule_status(schedule_id, "paused")
+    _remove_all_jobs_for_schedule(scheduler, schedule_id)
+    db = MongoDB.get_db()
+    await db.schedules.update_one(
+        {"schedule_id": schedule_id, "telegram_id": telegram_id},
+        {"$set": {"status": "paused", "weekly_active": False, "deep_green_active": False}}
+    )
+    return True
 
 async def resume_commit_schedule(schedule_id: str, telegram_id: int) -> bool:
     db = MongoDB.get_db()
     sched = await db.schedules.find_one({"schedule_id": schedule_id, "telegram_id": telegram_id})
     if sched:
+        stype = sched.get("schedule_type", "weekly_planner")
+        w_act = stype != "deep_green"
+        d_act = stype == "deep_green"
+        await db.schedules.update_one(
+            {"schedule_id": schedule_id, "telegram_id": telegram_id},
+            {"$set": {"status": "active", "weekly_active": w_act, "deep_green_active": d_act}}
+        )
+        sched["status"] = "active"
+        sched["weekly_active"] = w_act
+        sched["deep_green_active"] = d_act
         await add_job_to_scheduler(sched)
-        return await update_schedule_status(schedule_id, "active")
+        return True
     return False
 
 async def remove_commit_schedule(schedule_id: str, telegram_id: int) -> bool:
     scheduler = get_scheduler()
-    if scheduler.get_job(schedule_id):
-        scheduler.remove_job(schedule_id)
+    _remove_all_jobs_for_schedule(scheduler, schedule_id)
     return await delete_schedule(schedule_id, telegram_id)
 
 async def update_commit_schedule(
@@ -347,33 +390,47 @@ async def update_commit_schedule(
     telegram_id: int,
     schedule_type: Optional[str] = None,
     weekly_plan: Optional[Dict[str, int]] = None,
+    weekly_active: Optional[bool] = None,
+    deep_green_active: Optional[bool] = None,
     status: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Updates schedule mode (weekly_planner <-> deep_green), weekly plan, or status and reschedules."""
+    """Updates weekly/deep_green active flags independently, edits weekly plan, and reschedules."""
     db = MongoDB.get_db()
     sched = await db.schedules.find_one({"schedule_id": schedule_id, "telegram_id": telegram_id})
     if not sched:
         return None
 
-    updates: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
-    new_type = schedule_type or sched.get("schedule_type", "weekly_planner")
-    updates["schedule_type"] = new_type
+    cur_w, cur_d = get_mode_states(sched)
+    new_w = cur_w if weekly_active is None else bool(weekly_active)
+    new_d = cur_d if deep_green_active is None else bool(deep_green_active)
 
-    if new_type == "deep_green":
-        updates["interval_minutes"] = 60
-        updates["commits_per_day"] = 24
-        if weekly_plan is not None:
-            updates["weekly_plan"] = weekly_plan
-    elif new_type == "weekly_planner":
-        plan = weekly_plan if weekly_plan is not None else (
-            sched.get("weekly_plan") or {"Mon": 3, "Tue": 5, "Wed": 5, "Thu": 4, "Fri": 6, "Sat": 2, "Sun": 1}
-        )
-        updates["weekly_plan"] = plan
-        updates["commits_per_day"] = None
-        updates["interval_minutes"] = 60
+    # Support legacy single-status override (e.g. Stop Both sends status="paused")
+    if weekly_active is None and deep_green_active is None and status == "paused":
+        new_w = False
+        new_d = False
+    elif weekly_active is None and deep_green_active is None and status == "active":
+        target = schedule_type or sched.get("schedule_type", "weekly_planner")
+        new_w = (target != "deep_green")
+        new_d = (target == "deep_green")
 
-    if status in ("active", "paused"):
-        updates["status"] = status
+    updates: Dict[str, Any] = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "weekly_active": new_w,
+        "deep_green_active": new_d,
+        "status": "active" if (new_w or new_d) else "paused",
+    }
+
+    if schedule_type:
+        updates["schedule_type"] = schedule_type
+    elif new_d and not new_w:
+        updates["schedule_type"] = "deep_green"
+    elif new_w:
+        updates["schedule_type"] = "weekly_planner"
+
+    if weekly_plan is not None:
+        updates["weekly_plan"] = weekly_plan
+    elif "weekly_plan" not in sched or not sched.get("weekly_plan"):
+        updates["weekly_plan"] = {"Mon": 3, "Tue": 5, "Wed": 5, "Thu": 4, "Fri": 6, "Sat": 2, "Sun": 1}
 
     await db.schedules.update_one(
         {"schedule_id": schedule_id, "telegram_id": telegram_id},
@@ -382,10 +439,5 @@ async def update_commit_schedule(
 
     updated_sched = await db.schedules.find_one({"schedule_id": schedule_id, "telegram_id": telegram_id})
     if updated_sched:
-        if updated_sched.get("status") == "active":
-            await add_job_to_scheduler(updated_sched)
-        else:
-            scheduler = get_scheduler()
-            if scheduler.get_job(schedule_id):
-                scheduler.pause_job(schedule_id)
+        await add_job_to_scheduler(updated_sched)
     return updated_sched

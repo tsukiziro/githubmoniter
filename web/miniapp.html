@@ -1113,21 +1113,11 @@
       }
 
       container.innerHTML = state.schedules.map(s => {
-        const isActive = s.status === "active";
-        const isDeep = s.schedule_type === "deep_green";
+        const wActive = Boolean(s.weekly_active);
+        const dActive = Boolean(s.deep_green_active);
+        const anyActive = wActive || dActive;
         const plan = s.weekly_plan || { Mon: 3, Tue: 5, Wed: 5, Thu: 4, Fri: 6, Sat: 2, Sun: 1 };
         const totalWeek = DAYS.reduce((a, d) => a + (plan[d] || 0), 0);
-
-        const modeHtml = isDeep
-          ? `<div style="margin:8px 0; padding:8px 10px; border-radius:9px; background:rgba(57,211,83,0.08); border:1px solid rgba(57,211,83,0.25); font-size:12px;">
-               🟢 <b>Deep Green Mode</b> • 24 commits/day (every 60 mins)
-             </div>`
-          : `<div style="margin-top:8px; font-size:12px; color:var(--muted);">
-               📆 <b>Weekly Schedule</b> (${totalWeek} commits/week)
-             </div>
-             <div class="mini-week">
-               ${DAYS.map(d => `<div class="mini-day">${d}<b>${plan[d] || 0}</b></div>`).join("")}
-             </div>`;
 
         return `
           <div class="sched-card">
@@ -1136,88 +1126,78 @@
                 <div class="sched-repo">📦 ${s.repo}</div>
                 <div class="muted">📄 ${s.file_path || "ACTIVITY.md"} • Total pushed: ${s.total_executions || 0}</div>
               </div>
-              <span class="badge ${isActive ? "badge-active" : "badge-paused"}">${isActive ? "● Active" : "⏸ Stopped / Paused"}</span>
+              <span class="badge ${anyActive ? "badge-active" : "badge-paused"}">${anyActive ? "● Running" : "⏸ All Stopped"}</span>
             </div>
-            ${modeHtml}
-            <div class="sched-actions">
-              <button class="btn btn-sm btn-blue" onclick="openEditModal('${s.schedule_id}')">
-                📅 Edit Week
-              </button>
-              <button class="btn btn-sm" onclick="quickSwitchMode('${s.schedule_id}', '${isDeep ? "weekly_planner" : "deep_green"}', '${s.status}')">
-                ${isDeep ? "📆 Switch to Weekly" : "🟢 Switch to Deep Green"}
-              </button>
-              ${isActive ? `
-                <button class="btn btn-sm" onclick="toggleStatus('${s.schedule_id}', 'paused')">
-                  ${isDeep ? "⏸ Pause Deep Green" : "⏸ Pause Weekly"}
+
+            <!-- Weekly Schedule Box -->
+            <div style="background:var(--bg); border:1px solid var(--border); border-radius:11px; padding:10px; margin-bottom:8px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
+                <span style="font-size:12px; font-weight:700;">📆 Weekly Schedule <span class="muted">(${totalWeek}/wk)</span></span>
+                <span class="badge ${wActive ? "badge-active" : "badge-paused"}">${wActive ? "● On" : "⏸ Stopped"}</span>
+              </div>
+              <div class="mini-week">
+                ${DAYS.map(d => `<div class="mini-day">${d}<b>${plan[d] || 0}</b></div>`).join("")}
+              </div>
+              <div class="sched-actions" style="margin-top:8px;">
+                <button class="btn btn-sm btn-blue" onclick="openEditModal('${s.schedule_id}')">📅 Edit Week</button>
+                <button class="btn btn-sm" style="${wActive ? "" : "border-color:rgba(57,211,83,0.4);color:var(--accent-bright);"}" onclick="setModeActive('${s.schedule_id}', 'weekly', ${!wActive})">
+                  ${wActive ? "⏸ Stop Weekly" : "▶ Start Weekly"}
                 </button>
-                <button class="btn btn-sm btn-danger" onclick="stopBoth('${s.schedule_id}')">
-                  ⏹ Stop Both
-                </button>
+              </div>
+            </div>
+
+            <!-- Deep Green Mode Box -->
+            <div style="background:var(--bg); border:1px solid var(--border); border-radius:11px; padding:10px; margin-bottom:10px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:8px;">
+                <div>
+                  <div style="font-size:12px; font-weight:700;">🟢 Deep Green Mode</div>
+                  <div class="muted">24 commits / day (every 60 mins)</div>
+                </div>
+                <span class="badge ${dActive ? "badge-active" : "badge-paused"}">${dActive ? "● On" : "⏸ Stopped"}</span>
+              </div>
+              <button class="btn btn-sm" style="width:100%; ${dActive ? "" : "border-color:rgba(57,211,83,0.4);color:var(--accent-bright);"}" onclick="setModeActive('${s.schedule_id}', 'deep_green', ${!dActive})">
+                ${dActive ? "⏸ Stop Deep Green" : "▶ Start Deep Green"}
+              </button>
+            </div>
+
+            <!-- Global Controls -->
+            <div class="sched-actions" style="margin-top:0;">
+              ${anyActive ? `
+                <button class="btn btn-sm btn-danger" onclick="setBothActive('${s.schedule_id}', false)">⏹ Stop Both</button>
               ` : `
-                <button class="btn btn-sm" style="border-color:rgba(57,211,83,0.4);color:var(--accent-bright);" onclick="resumeInMode('${s.schedule_id}', 'weekly_planner')">
-                  ▶ Resume Weekly
-                </button>
-                <button class="btn btn-sm" style="border-color:rgba(57,211,83,0.4);color:var(--accent-bright);" onclick="resumeInMode('${s.schedule_id}', 'deep_green')">
-                  ▶ Resume Deep Green
-                </button>
+                <button class="btn btn-sm" style="border-color:rgba(57,211,83,0.4);color:var(--accent-bright);" onclick="setBothActive('${s.schedule_id}', true)">▶ Resume Both</button>
               `}
-              <button class="btn btn-sm btn-danger btn-full" onclick="deleteSched('${s.schedule_id}')">🗑 Delete Schedule</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSched('${s.schedule_id}')">🗑 Delete</button>
             </div>
           </div>
         `;
       }).join("");
     }
 
-    async function quickSwitchMode(scheduleId, targetMode, currentStatus) {
+    async function setModeActive(scheduleId, mode, active) {
       haptic("medium");
+      const payload = mode === "weekly" ? { weekly_active: active } : { deep_green_active: active };
       try {
         await api(`/api/miniapp/schedules/${scheduleId}`, {
           method: "PATCH",
-          body: JSON.stringify({ schedule_type: targetMode, status: currentStatus })
+          body: JSON.stringify(payload)
         });
-        showToast(targetMode === "deep_green" ? "🟢 Switched to Deep Green Mode!" : "📆 Switched to Weekly Schedule!");
+        const label = mode === "weekly" ? "Weekly Schedule" : "Deep Green Mode";
+        showToast(active ? `▶ ${label} started!` : `⏸ ${label} stopped`);
         await loadMe();
       } catch (err) {
         showToast("❌ " + err.message);
       }
     }
 
-    async function toggleStatus(scheduleId, newStatus) {
-      haptic("light");
+    async function setBothActive(scheduleId, active) {
+      haptic(active ? "medium" : "heavy");
       try {
         await api(`/api/miniapp/schedules/${scheduleId}`, {
           method: "PATCH",
-          body: JSON.stringify({ status: newStatus })
+          body: JSON.stringify({ weekly_active: active, deep_green_active: active })
         });
-        showToast(newStatus === "active" ? "▶ Schedule resumed" : "⏸ Mode paused");
-        await loadMe();
-      } catch (err) {
-        showToast("❌ " + err.message);
-      }
-    }
-
-    async function stopBoth(scheduleId) {
-      haptic("heavy");
-      try {
-        await api(`/api/miniapp/schedules/${scheduleId}`, {
-          method: "PATCH",
-          body: JSON.stringify({ status: "paused" })
-        });
-        showToast("⏹ Stopped both Weekly & Deep Green modes");
-        await loadMe();
-      } catch (err) {
-        showToast("❌ " + err.message);
-      }
-    }
-
-    async function resumeInMode(scheduleId, mode) {
-      haptic("medium");
-      try {
-        await api(`/api/miniapp/schedules/${scheduleId}`, {
-          method: "PATCH",
-          body: JSON.stringify({ schedule_type: mode, status: "active" })
-        });
-        showToast(mode === "deep_green" ? "▶ Resumed Deep Green Mode!" : "▶ Resumed Weekly Schedule!");
+        showToast(active ? "▶ Both Weekly & Deep Green resumed!" : "⏹ Stopped both Weekly & Deep Green");
         await loadMe();
       } catch (err) {
         showToast("❌ " + err.message);
@@ -1240,12 +1220,12 @@
       const sched = state.schedules.find(s => s.schedule_id === scheduleId);
       if (!sched) return;
       state.editScheduleId = scheduleId;
-      state.editMode = sched.schedule_type === "deep_green" ? "deep_green" : "weekly_planner";
+      state.editMode = "weekly_planner";
       state.editPlan = { ...(sched.weekly_plan || { Mon: 3, Tue: 5, Wed: 5, Thu: 4, Fri: 6, Sat: 2, Sun: 1 }) };
       state.editSelectedDay = "Mon";
 
       document.getElementById("editModalRepo").textContent = `📦 ${sched.repo}`;
-      setEditMode(state.editMode);
+      setEditMode("weekly_planner");
       renderCalendar("edit");
       document.getElementById("editModal").classList.add("open");
     }
@@ -1270,12 +1250,11 @@
         await api(`/api/miniapp/schedules/${state.editScheduleId}`, {
           method: "PATCH",
           body: JSON.stringify({
-            schedule_type: state.editMode,
             weekly_plan: state.editPlan
           })
         });
         haptic("medium");
-        showToast("✅ Schedule updated!");
+        showToast("✅ Weekly calendar updated!");
         closeEditModal();
         await loadMe();
       } catch (err) {

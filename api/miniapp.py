@@ -17,6 +17,7 @@ from bot.services.scheduler_service import (
     create_commit_schedule,
     update_commit_schedule,
     remove_commit_schedule,
+    get_mode_states,
 )
 from bot.database.mongodb import get_user_schedules
 
@@ -62,9 +63,13 @@ def verify_telegram_init_data(init_data: str) -> Dict[str, Any]:
 
 
 def serialize_schedule(s: Dict[str, Any]) -> Dict[str, Any]:
-    """Strips MongoDB _id and returns clean JSON-serializable schedule dict."""
+    """Strips MongoDB _id and includes normalized weekly_active / deep_green_active booleans."""
     doc = dict(s)
     doc.pop("_id", None)
+    w_act, d_act = get_mode_states(doc)
+    doc["weekly_active"] = w_act
+    doc["deep_green_active"] = d_act
+    doc["status"] = "active" if (w_act or d_act) else "paused"
     return doc
 
 
@@ -82,6 +87,8 @@ class CreateScheduleRequest(BaseModel):
 class UpdateScheduleRequest(BaseModel):
     schedule_type: Optional[str] = Field(None, pattern="^(weekly_planner|deep_green)$")
     weekly_plan: Optional[Dict[str, int]] = None
+    weekly_active: Optional[bool] = None
+    deep_green_active: Optional[bool] = None
     status: Optional[str] = Field(None, pattern="^(active|paused)$")
 
 
@@ -293,6 +300,8 @@ async def miniapp_update_schedule(
         telegram_id=telegram_id,
         schedule_type=body.schedule_type,
         weekly_plan=clean_plan,
+        weekly_active=body.weekly_active,
+        deep_green_active=body.deep_green_active,
         status=body.status,
     )
     if not updated:
