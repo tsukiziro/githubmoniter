@@ -386,11 +386,28 @@
     }
 
     .step-val {
-      min-width: 28px;
+      width: 52px;
+      height: 34px;
       text-align: center;
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 800;
       color: var(--accent-bright);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      outline: none;
+      padding: 0 4px;
+      -moz-appearance: textfield;
+    }
+
+    .step-val:focus {
+      border-color: var(--blue);
+    }
+
+    .step-val::-webkit-outer-spin-button,
+    .step-val::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
     }
 
     input[type="range"] {
@@ -954,7 +971,10 @@
           </div>
           <div class="stepper">
             <button type="button" class="step-btn" onclick="updateDayCount('${prefix}', ${curVal - 1})">−</button>
-            <span class="step-val">${curVal}</span>
+            <input type="number" inputmode="numeric" min="0" max="50" class="step-val" value="${curVal}"
+              onfocus="this.select()"
+              oninput="handleDayInput('${prefix}', this.value)"
+              onchange="updateDayCount('${prefix}', this.value)" />
             <button type="button" class="step-btn" onclick="updateDayCount('${prefix}', ${curVal + 1})">+</button>
           </div>
         </div>
@@ -981,6 +1001,30 @@
       if (prefix === "create") state.createSelectedDay = day;
       else state.editSelectedDay = day;
       renderCalendar(prefix);
+    }
+
+    function handleDayInput(prefix, rawVal) {
+      if (rawVal === "") return;
+      const parsed = parseInt(rawVal, 10);
+      if (isNaN(parsed)) return;
+      const clamped = Math.max(0, Math.min(50, parsed));
+      const plan = prefix === "create" ? state.createPlan : state.editPlan;
+      const selectedDay = prefix === "create" ? state.createSelectedDay : state.editSelectedDay;
+      plan[selectedDay] = clamped;
+
+      const total = DAYS.reduce((acc, d) => acc + (plan[d] || 0), 0);
+      document.getElementById(prefix + "TotalWeek").textContent = `${total} commits / week`;
+      document.getElementById(prefix + "CalGrid").innerHTML = DAYS.map(d => {
+        const c = plan[d] || 0;
+        const lvl = getLevelClass(c);
+        const sel = d === selectedDay ? "selected" : "";
+        return `
+          <div class="cal-day ${lvl} ${sel}" onclick="selectDay('${prefix}', '${d}')">
+            <span class="cal-day-name">${d}</span>
+            <span class="cal-day-count">${c}</span>
+          </div>
+        `;
+      }).join("");
     }
 
     function updateDayCount(prefix, val) {
