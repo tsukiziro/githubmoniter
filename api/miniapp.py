@@ -43,6 +43,11 @@ from bot.database.mongodb import (
     get_admin_dashboard_stats,
     get_all_registered_users,
     delete_user,
+    is_user_banned,
+    ban_user,
+    unban_user,
+    list_banned_users,
+    get_user,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,6 +156,9 @@ async def miniapp_me(x_telegram_init_data: str = Header(None, alias="X-Telegram-
     """Returns user GitHub connection status and schedules for the active GitHub account."""
     tg_user = verify_telegram_init_data(x_telegram_init_data)
     telegram_id = int(tg_user["id"])
+
+    if await is_user_banned(telegram_id):
+        raise HTTPException(status_code=403, detail="Your account has been banned by an administrator.")
 
     role = await get_admin_role(telegram_id)
     token, user = await get_user_decrypted_token(telegram_id)
@@ -703,6 +711,7 @@ async def miniapp_admin_overview(x_telegram_init_data: str = Header(None, alias=
     stats = await get_admin_dashboard_stats()
     overview = await get_admin_users_overview()
     subadmins = await list_subadmins()
+    banned = await list_banned_users()
     scheduler = get_scheduler()
 
     return {
@@ -715,6 +724,7 @@ async def miniapp_admin_overview(x_telegram_init_data: str = Header(None, alias=
         },
         "users": overview["users"],
         "subadmins": subadmins,
+        "banned_users": banned,
     }
 
 
@@ -894,6 +904,155 @@ async def miniapp_admin_export_to_chat(
         document=bio,
         filename=filename,
         caption=f"📥 <b>GitHub Guardian Export ({format.upper()})</b>\nTotal Users: {len(overview['users'])}",
+        parse_mode="HTML",
+    )
+    return {"ok": True, "filename": filename}
+
+
+class BanUserRequest(BaseModel):
+    telegram_id: int
+    reason: str = ""
+    github_username: str = ""
+
+
+class DirectMessageRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+@router.post("/api/miniapp/admin/ban")
+async def miniapp_admin_ban_user(
+    body: BanUserRequest,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Admin or Sub-Admin: bans a Telegram user ID, stops all their jobs, and deletes their data."""
+    caller_id, caller_role = await _require_admin_or_subadmin(x_telegram_init_data)
+    target_id = int(body.telegram_id)
+    target_role = await get_admin_role(target_id)
+
+    if target_id == get_main_admin_id() or target_role == "admin":
+        raise HTTPException(status_code=403, detail="Cannot ban the Main Admin.")
+    if caller_role == "subadmin" and target_role == "subadmin":
+        raise HTTPException(status_code=403, detail="Sub-Admins cannot ban other Sub-Admins.")
+    if target_id == caller_id:
+        raise HTTPException(status_code=400, detail="You cannot ban yourself.")
+
+    schedules = await get_user_schedules(target_id)
+    scheduler = get_scheduler()
+    for s in schedules:
+        _remove_all_jobs_for_schedule(scheduler, s["schedule_id"])
+
+    if target_role == "subadmin":
+        await remove_subadmin(target_id)
+    await delete_user(target_id)
+    doc = await ban_user(target_id, banned_by=caller_id, reason=body.reason, github_username=body.github_username)
+    doc.pop("_id", None)
+    return {"ok": True, "banned": doc}
+
+
+@router.delete("/api/miniapp/admin/ban/{target_id}")
+async def miniapp_admin_unban_user(
+    target_id: int,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Admin or Sub-Admin: unbans a Telegram user ID."""
+    await _require_admin_or_subadmin(x_telegram_init_data)
+    removed = await unban_user(target_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="User is not in the ban list.")
+    return {"ok": True}
+
+
+@router.post("/api/miniapp/admin/users/{target_id}/dm")
+async def miniapp_admin_dm_user(
+    target_id: int,
+    body: DirectMessageRequest,
+    request: Request,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Admin or Sub-Admin: sends a direct Telegram message to a specific user."""
+    await _require_admin_or_subadmin(x_telegram_init_data)
+    bot_app = getattr(request.app.state, "bot_app", None)
+    if not bot_app or not hasattr(bot_app, "bot"):
+        raise HTTPException(status_code=503, detail="Bot instance is not ready.")
+
+    msg_text = f"💬 <b>Message from GitHub Guardian Admin</b>\n\n{body.message.strip()}"
+    try:
+        await bot_app.bot.send_message(chat_id=target_id, text=msg_text, parse_mode="HTML")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to send DM (user may have blocked the bot): {e}")
+
+    return {"ok": True}
+
+
+def _build_single_user_json(u: Dict[str, Any], schedules: List[Dict[str, Any]]) -> bytes:
+    from bot.database.mongodb import normalize_user_accounts
+    safe_accounts = [
+        {
+            "github_id": a.get("github_id"),
+            "github_username": a.get("github_username"),
+            "auth_method": a.get("auth_method"),
+            "connected_at": a.get("connected_at"),
+        }
+        for a in normalize_user_accounts(u)
+    ]
+    payload = {
+        "telegram_id": u.get("telegram_id"),
+        "active_github_username": u.get("github_username"),
+        "timezone": u.get("timezone"),
+        "notifications": u.get("notifications", True),
+        "connected_at": u.get("connected_at"),
+        "accounts": safe_accounts,
+        "schedules": [serialize_schedule(s) for s in schedules],
+    }
+    return json.dumps(payload, indent=2).encode("utf-8")
+
+
+@router.get("/api/miniapp/admin/users/{target_id}/export")
+async def miniapp_admin_export_single_user(
+    target_id: int,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Downloads a single user's profile, accounts, and schedules as JSON (no decrypted tokens)."""
+    await _require_admin_or_subadmin(x_telegram_init_data)
+    u = await get_user(target_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found.")
+    schedules = await get_user_schedules(target_id)
+    data_bytes = _build_single_user_json(u, schedules)
+    filename = f"user_{target_id}_{u.get('github_username', 'data')}.json"
+    return Response(
+        content=data_bytes,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/api/miniapp/admin/users/{target_id}/export/send")
+async def miniapp_admin_send_single_user_json(
+    target_id: int,
+    request: Request,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Sends a single user's JSON export directly to the admin's Telegram chat."""
+    import io
+    caller_id, _ = await _require_admin_or_subadmin(x_telegram_init_data)
+    bot_app = getattr(request.app.state, "bot_app", None)
+    if not bot_app or not hasattr(bot_app, "bot"):
+        raise HTTPException(status_code=503, detail="Bot instance is not ready.")
+
+    u = await get_user(target_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found.")
+    schedules = await get_user_schedules(target_id)
+    data_bytes = _build_single_user_json(u, schedules)
+    filename = f"user_{target_id}_{u.get('github_username', 'data')}.json"
+    bio = io.BytesIO(data_bytes)
+    bio.name = filename
+    await bot_app.bot.send_document(
+        chat_id=caller_id,
+        document=bio,
+        filename=filename,
+        caption=f"📋 <b>User Data Export (JSON)</b>\nID: <code>{target_id}</code> • @{u.get('github_username', '')}",
         parse_mode="HTML",
     )
     return {"ok": True, "filename": filename}

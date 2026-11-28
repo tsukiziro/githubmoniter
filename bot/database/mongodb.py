@@ -44,6 +44,9 @@ class MongoDB:
 
             # Sub-admins index
             await db.subadmins.create_index("telegram_id", unique=True)
+
+            # Banned users index
+            await db.banned_users.create_index("telegram_id", unique=True)
             
             # Purge repositories_cache collection completely from database
             try:
@@ -475,6 +478,49 @@ async def remove_subadmin(telegram_id: int) -> bool:
     db = MongoDB.get_db()
     res = await db.subadmins.delete_one({"telegram_id": int(telegram_id)})
     return res.deleted_count > 0
+
+
+async def is_user_banned(telegram_id: int) -> bool:
+    if telegram_id == get_main_admin_id():
+        return False
+    db = MongoDB.get_db()
+    doc = await db.banned_users.find_one({"telegram_id": int(telegram_id)})
+    return doc is not None
+
+
+async def ban_user(telegram_id: int, banned_by: int, reason: str = "", github_username: str = "") -> Dict[str, Any]:
+    db = MongoDB.get_db()
+    doc = {
+        "telegram_id": int(telegram_id),
+        "github_username": github_username,
+        "banned_by": int(banned_by),
+        "reason": reason.strip() or "Banned by administrator",
+        "banned_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.banned_users.update_one(
+        {"telegram_id": int(telegram_id)},
+        {"$set": doc},
+        upsert=True,
+    )
+    return doc
+
+
+async def unban_user(telegram_id: int) -> bool:
+    db = MongoDB.get_db()
+    res = await db.banned_users.delete_one({"telegram_id": int(telegram_id)})
+    return res.deleted_count > 0
+
+
+async def list_banned_users() -> List[Dict[str, Any]]:
+    db = MongoDB.get_db()
+    cursor = db.banned_users.find({}).sort("banned_at", -1)
+    docs = await cursor.to_list(length=500)
+    res = []
+    for d in docs:
+        item = dict(d)
+        item.pop("_id", None)
+        res.append(item)
+    return res
 
 
 async def get_admin_users_overview() -> Dict[str, Any]:

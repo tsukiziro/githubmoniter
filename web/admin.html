@@ -222,6 +222,48 @@
     }
 
     .hidden { display: none !important; }
+
+    .user-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      cursor: pointer;
+      transition: border-color 0.15s ease;
+    }
+    .user-card:hover, .user-card:active { border-color: var(--blue); }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.72);
+      display: none;
+      align-items: flex-end;
+      justify-content: center;
+      z-index: 150;
+      padding: 10px;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-sheet {
+      width: 100%;
+      max-width: 540px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    @media (max-width: 420px) {
+      .modal-backdrop { padding: 0; }
+      .modal-sheet {
+        border-radius: 18px 18px 0 0;
+        border-left: none;
+        border-right: none;
+        border-bottom: none;
+        padding: 16px 12px calc(18px + env(safe-area-inset-bottom));
+      }
+    }
   </style>
 </head>
 <body>
@@ -307,8 +349,44 @@
           <span>👥 Connected GitHub Accounts</span>
           <span class="muted" id="admUsersCountLabel">0 accounts</span>
         </div>
+        <div class="muted" style="margin-bottom:8px;">Tap any account card for DM, JSON export, Promote, Remove, or Ban</div>
         <input type="text" id="adminUserSearch" placeholder="🔍 Search by @username or Telegram ID..." oninput="renderAdminUsers()" style="margin-bottom:10px;" />
         <div id="adminUsersList" style="display:flex; flex-direction:column; gap:8px;"></div>
+      </div>
+
+      <!-- Banned Users -->
+      <div class="card">
+        <div class="card-title">
+          <span>🚫 Banned Users</span>
+          <span class="muted" id="bannedCountLabel">0 banned</span>
+        </div>
+        <div id="bannedUsersList" style="display:flex; flex-direction:column; gap:6px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- User Action Modal -->
+  <div id="userModal" class="modal-backdrop" onclick="if(event.target===this) closeUserModal()">
+    <div class="modal-sheet">
+      <div class="card-title">
+        <span id="umTitle">👤 User Actions</span>
+        <button type="button" class="btn btn-sm" onclick="closeUserModal()">✕</button>
+      </div>
+      <div id="umSummary" style="background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px; margin-bottom:12px;"></div>
+
+      <!-- Direct Message -->
+      <div style="margin-bottom:12px;">
+        <div class="muted" style="margin-bottom:5px; font-weight:700;">💬 Direct Message to User</div>
+        <textarea id="umDmInput" rows="2" placeholder="Write a direct message to this user..." style="margin-bottom:6px; resize:vertical;"></textarea>
+        <button type="button" class="btn btn-blue" style="width:100%;" id="umDmBtn" onclick="sendUserDM()">💬 Send Direct Message</button>
+      </div>
+
+      <!-- Actions Grid -->
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+        <button type="button" class="btn btn-blue" onclick="downloadSingleUserJson()">📋 Download JSON</button>
+        <button type="button" class="btn btn-blue hidden" id="umPromoteBtn" onclick="promoteFromModal()">🛡️ Promote Sub-Admin</button>
+        <button type="button" class="btn btn-danger hidden" id="umRemoveBtn" onclick="removeFromModal()">🗑 Remove Account</button>
+        <button type="button" class="btn btn-danger hidden" id="umBanBtn" onclick="banFromModal()">🚫 Ban User</button>
       </div>
     </div>
   </div>
@@ -399,6 +477,26 @@
       }
 
       renderAdminUsers();
+      renderBannedUsers();
+    }
+
+    function renderBannedUsers() {
+      const banned = state.adminData?.banned_users || [];
+      document.getElementById("bannedCountLabel").textContent = `${banned.length} banned`;
+      const el = document.getElementById("bannedUsersList");
+      if (!banned.length) {
+        el.innerHTML = `<div class="muted">No banned users.</div>`;
+        return;
+      }
+      el.innerHTML = banned.map(b => `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; background:var(--bg); border:1px solid rgba(248,81,73,0.3); border-radius:9px; padding:8px 10px;">
+          <div style="min-width:0;">
+            <div style="font-size:12px; font-weight:700;">🚫 ID: <code>${b.telegram_id}</code> ${b.github_username ? `(@${b.github_username})` : ""}</div>
+            <div class="muted">${b.reason || "Banned by administrator"}</div>
+          </div>
+          <button type="button" class="btn btn-sm btn-blue" onclick="unbanUser(${b.telegram_id})">Unban</button>
+        </div>
+      `).join("");
     }
 
     function renderAdminUsers() {
@@ -423,10 +521,9 @@
         const roleTag = u.role === "admin"
           ? `<span class="badge badge-active">👑 Admin</span>`
           : (u.role === "subadmin" ? `<span class="badge badge-sub">🛡️ Sub-Admin</span>` : "");
-        const canRemove = u.role !== "admin" && (isMain || u.role !== "subadmin") && u.telegram_id !== state.myTelegramId;
 
         return `
-          <div style="background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px;">
+          <div class="user-card" onclick="openUserModal(${u.telegram_id}, '${u.github_username}')">
             <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:4px;">
               <div style="min-width:0;">
                 <div style="font-size:13px; font-weight:700;">@${u.github_username} ${u.is_active_account ? "" : '<span class="muted">(2nd)</span>'}</div>
@@ -436,11 +533,163 @@
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:6px;">
               <span class="muted">⏰ ${u.active_schedules_count}/${u.schedules_count} active • 🚀 ${Number(u.total_commits || 0).toLocaleString()} commits</span>
-              ${canRemove ? `<button type="button" class="btn btn-sm btn-danger" onclick="adminRemoveAccount(${u.telegram_id}, '${u.github_username}')">🗑 Remove</button>` : ""}
+              <span class="muted">Tap for actions ›</span>
             </div>
           </div>
         `;
       }).join("");
+    }
+
+    function openUserModal(tid, username) {
+      const d = state.adminData;
+      if (!d) return;
+      const u = (d.users || []).find(x => x.telegram_id === tid && x.github_username === username);
+      if (!u) return;
+      state.selectedUser = u;
+      haptic("light");
+
+      const isMain = d.role === "admin";
+      const canAct = u.role !== "admin" && (isMain || u.role !== "subadmin") && u.telegram_id !== state.myTelegramId;
+
+      document.getElementById("umTitle").textContent = `@${u.github_username}`;
+      document.getElementById("umSummary").innerHTML = `
+        <div style="font-size:12px; font-weight:700;">Telegram ID: <code>${u.telegram_id}</code> • Role: <b>${u.role.toUpperCase()}</b></div>
+        <div class="muted">Auth: ${u.auth_method} • Timezone: ${u.timezone}</div>
+        <div class="muted">Schedules: ${u.active_schedules_count}/${u.schedules_count} active • Commits: ${Number(u.total_commits || 0).toLocaleString()}</div>
+      `;
+      document.getElementById("umDmInput").value = "";
+
+      const promoteBtn = document.getElementById("umPromoteBtn");
+      if (isMain && u.role !== "admin") {
+        promoteBtn.classList.remove("hidden");
+        promoteBtn.textContent = u.role === "subadmin" ? "⬇️ Demote Sub-Admin" : "🛡️ Promote Sub-Admin";
+      } else {
+        promoteBtn.classList.add("hidden");
+      }
+
+      document.getElementById("umRemoveBtn").classList.toggle("hidden", !canAct);
+      document.getElementById("umBanBtn").classList.toggle("hidden", !canAct);
+      document.getElementById("userModal").classList.add("open");
+    }
+
+    function closeUserModal() {
+      document.getElementById("userModal").classList.remove("open");
+    }
+
+    async function sendUserDM() {
+      const u = state.selectedUser;
+      if (!u) return;
+      const msg = document.getElementById("umDmInput").value.trim();
+      if (!msg) {
+        showToast("Write a message first");
+        return;
+      }
+      const btn = document.getElementById("umDmBtn");
+      btn.disabled = true;
+      try {
+        await api(`/api/miniapp/admin/users/${u.telegram_id}/dm`, {
+          method: "POST",
+          body: JSON.stringify({ message: msg })
+        });
+        document.getElementById("umDmInput").value = "";
+        haptic("medium");
+        showToast(`💬 DM sent to @${u.github_username}`);
+      } catch (err) {
+        showToast("❌ " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function downloadSingleUserJson() {
+      const u = state.selectedUser;
+      if (!u) return;
+      haptic("medium");
+      try {
+        await api(`/api/miniapp/admin/users/${u.telegram_id}/export/send`, { method: "POST" });
+        showToast(`📋 JSON sent to your Telegram chat!`);
+
+        const res = await fetch(`/api/miniapp/admin/users/${u.telegram_id}/export`, {
+          headers: { "X-Telegram-Init-Data": state.initData }
+        });
+        if (res.ok) {
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `user_${u.telegram_id}_${u.github_username}.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        }
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    async function promoteFromModal() {
+      const u = state.selectedUser;
+      if (!u) return;
+      if (u.role === "subadmin") {
+        await demoteSubadmin(u.telegram_id);
+        closeUserModal();
+        return;
+      }
+      haptic("medium");
+      try {
+        await api("/api/miniapp/admin/subadmins", {
+          method: "POST",
+          body: JSON.stringify({ telegram_id: u.telegram_id })
+        });
+        showToast(`🛡️ @${u.github_username} promoted to Sub-Admin!`);
+        closeUserModal();
+        await loadAdminOverview();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    async function removeFromModal() {
+      const u = state.selectedUser;
+      if (!u) return;
+      await adminRemoveAccount(u.telegram_id, u.github_username);
+      closeUserModal();
+    }
+
+    async function banFromModal() {
+      const u = state.selectedUser;
+      if (!u) return;
+      const reason = prompt(`Ban Telegram ID ${u.telegram_id} (@${u.github_username})? Optional reason:`, "Violation of bot rules");
+      if (reason === null) return;
+      haptic("heavy");
+      try {
+        await api("/api/miniapp/admin/ban", {
+          method: "POST",
+          body: JSON.stringify({
+            telegram_id: u.telegram_id,
+            github_username: u.github_username,
+            reason
+          })
+        });
+        showToast(`🚫 Banned ID ${u.telegram_id}`);
+        closeUserModal();
+        await loadAdminOverview();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    async function unbanUser(tid) {
+      if (!confirm(`Unban Telegram ID ${tid}?`)) return;
+      haptic("medium");
+      try {
+        await api(`/api/miniapp/admin/ban/${tid}`, { method: "DELETE" });
+        showToast(`✅ Unbanned ID ${tid}`);
+        await loadAdminOverview();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
     }
 
     async function promoteSubadmin() {
@@ -546,3 +795,4 @@
   </script>
 </body>
 </html>
+

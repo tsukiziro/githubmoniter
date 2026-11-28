@@ -134,6 +134,10 @@ async def execute_scheduled_commit(schedule_id: str, mode: Optional[str] = None)
         return
 
     telegram_id = sched["telegram_id"]
+    from bot.database.mongodb import is_user_banned
+    if await is_user_banned(telegram_id):
+        logger.info(f"User {telegram_id} is banned. Skipping scheduled commit {schedule_id}.")
+        return
     sched_account = sched.get("github_username") or (sched["repo"].split("/")[0] if "/" in sched.get("repo", "") else None)
     token, user = await get_user_decrypted_token(telegram_id, github_username=sched_account)
     if not token or not user:

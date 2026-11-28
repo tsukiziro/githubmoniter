@@ -7,7 +7,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ChatJoinRequestHandler
 from bot.services.auth_service import get_user_decrypted_token, generate_oauth_url
 from bot.services.github_api import GitHubAPIClient, GitHubAPIException
-from bot.database.mongodb import get_user_schedules, update_user_settings, get_user
+from bot.database.mongodb import get_user_schedules, update_user_settings, get_user, is_user_banned
 from bot.keyboards.inline import auth_keyboard, main_dashboard_keyboard
 from bot.utils.helpers import safe_edit_or_reply
 
@@ -235,6 +235,10 @@ async def verify_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point when user runs /start."""
     telegram_id = update.effective_user.id
+
+    if await is_user_banned(telegram_id):
+        await safe_edit_or_reply(update, text="🚫 <b>Access Denied:</b> Your account has been banned by an administrator.")
+        return
 
     try:
         is_joined, missing = await check_all_force_subs(context.bot, telegram_id)
