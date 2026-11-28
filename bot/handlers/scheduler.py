@@ -128,46 +128,65 @@ async def view_schedule_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         await safe_edit_or_reply(update, "Schedule not found.")
         return
 
-    is_active = sched["status"] == "active"
+    from bot.services.scheduler_service import get_mode_states
+    w_active, d_active = get_mode_states(sched)
+    is_active = w_active or d_active
     status_str = "🟢 Active" if is_active else "⏸️ Paused"
-    
+
     history = sched.get("execution_history", [])
     now_utc = datetime.now(timezone.utc)
-    
-    commits_4h = sum(
-        1 for ts in history 
-        if isinstance(ts, str) and (now_utc - datetime.fromisoformat(ts.replace("Z", "+00:00"))).total_seconds() <= 14400
-    )
-    commits_24h = sum(
-        1 for ts in history 
-        if isinstance(ts, str) and (now_utc - datetime.fromisoformat(ts.replace("Z", "+00:00"))).total_seconds() <= 86400
-    )
-    total_commits = len(history) if history else sched.get("total_executions", 0)
-    
-    last_run = sched.get("last_run", "Never")
-    stype = sched.get("schedule_type", "custom")
     user_tz = sched.get('timezone', 'Asia/Kolkata')
-    last_run_formatted = format_user_datetime(last_run, user_tz) if last_run != "Never" else "Never"
-    
-    cpd = sched.get("commits_per_day")
-    stime = sched.get("start_time", "now")
-    interval = sched.get("interval_minutes")
-    weekly_plan = sched.get("weekly_plan")
+    try:
+        loc_tz = pytz.timezone(user_tz)
+    except Exception:
+        loc_tz = pytz.timezone("Asia/Kolkata")
+    today_local_str = datetime.now(loc_tz).strftime("%Y-%m-%d")
 
-    if stype == "weekly_planner" and isinstance(weekly_plan, dict):
+    commits_4h = 0
+    commits_24h = 0
+    commits_today = 0
+    for ts in history:
+        if isinstance(ts, str):
+            try:
+                dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if dt_utc.tzinfo is None:
+                    dt_utc = pytz.utc.localize(dt_utc)
+                age_sec = (now_utc - dt_utc).total_seconds()
+                if age_sec <= 14400:
+                    commits_4h += 1
+                if age_sec <= 86400:
+                    commits_24h += 1
+                if dt_utc.astimezone(loc_tz).strftime("%Y-%m-%d") == today_local_str:
+                    commits_today += 1
+            except Exception:
+                pass
+
+    # Use real total_executions counter (not capped by execution_history's 100-item slice)
+    total_commits = sched.get("total_executions")
+    if total_commits is None:
+        total_commits = len(history)
+
+    last_run = sched.get("last_run", "Never")
+    last_run_formatted = format_user_datetime(last_run, user_tz) if last_run and last_run != "Never" else "Never"
+
+    weekly_plan = sched.get("weekly_plan")
+    auto_shuffle = bool(sched.get("auto_shuffle_weekly", False))
+    w_badge = "🟢 Running" if w_active else "⏸️ Stopped"
+    d_badge = "🟢 Running" if d_active else "⏸️ Stopped"
+
+    if isinstance(weekly_plan, dict):
         total_wk = sum(weekly_plan.values())
-        plan_str = ", ".join([f"{d}:{c}" for d, c in weekly_plan.items()])
-        stype_display = f"📆 Weekly Planner ({total_wk} Commits/Week)"
-        cron_display = f"Daily distribution: {plan_str}"
-    elif stype == "custom_daily" or cpd:
-        stype_display = f"🎯 Custom Daily ({cpd or 24} Commits/Day)"
-        cron_display = f"1 commit every {interval} mins (Starts: {stime})"
-    elif stype == "deep_green":
-        stype_display = "🟢 Deep Green Mode (24 Commits/Day)"
-        cron_display = "Every 60 mins (24 commits/day)"
+        days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        plan_str = ", ".join([f"{d}:{weekly_plan.get(d, 0)}" for d in days_order])
+        weekly_line = (
+            f"📆 <b>Weekly Schedule:</b> {w_badge} ({total_wk}/wk)\n"
+            f"   └ <code>{plan_str}</code>\n"
+            f"   └ 🔀 <b>Auto-Shuffle:</b> {'ON (shuffles weekly)' if auto_shuffle else 'OFF'}\n"
+        )
     else:
-        stype_display = stype.upper()
-        cron_display = f"<code>{sched.get('cron_expression', 'N/A')}</code>"
+        weekly_line = f"📆 <b>Weekly Schedule:</b> {w_badge}\n"
+
+    deep_line = f"🟢 <b>Deep Green Mode:</b> {d_badge} (24 commits/day)\n"
 
     text = (
         f"⏰ <b>Commit Schedule Details</b>\n\n"
@@ -175,14 +194,16 @@ async def view_schedule_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         f"📦 <b>Dedicated Repo:</b> {sched['repo']}\n"
         f"📄 <b>File:</b> <code>{sched['file_path']}</code>\n"
         f"💬 <b>Commit Message:</b> {sched['commit_message']}\n"
-        f"⚙️ <b>Type:</b> {stype_display}\n"
-        f"⏱ <b>Frequency:</b> {cron_display}\n"
         f"🌐 <b>Timezone:</b> {user_tz}\n"
-        f"🟢 <b>Status:</b> {status_str}\n\n"
+        f"⚡ <b>Overall Status:</b> {status_str}\n\n"
+        f"⚙️ <b>Active Modes:</b>\n"
+        f"{weekly_line}"
+        f"{deep_line}\n"
         f"📊 <b>Execution Stats:</b>\n"
+        f"• <b>Today (Local):</b> {commits_today} commits\n"
         f"• <b>Last 4 Hours:</b> {commits_4h} commits\n"
         f"• <b>Last 24 Hours:</b> {commits_24h} commits\n"
-        f"• <b>Total Commits Pushed:</b> {total_commits}\n"
+        f"• <b>Total Commits Pushed:</b> {total_commits:,}\n"
         f"🕒 <b>Last Run:</b> {last_run_formatted}\n"
     )
     

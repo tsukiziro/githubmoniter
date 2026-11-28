@@ -1,6 +1,7 @@
 import logging
+import random
 import pytz
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -42,6 +43,65 @@ async def init_scheduler() -> AsyncIOScheduler:
         logger.error(f"Error restoring scheduled jobs: {e}")
         
     return scheduler
+
+DAYS_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def shuffle_weekly_plan_dict(plan: Dict[str, int]) -> Dict[str, int]:
+    """Randomly reassigns the 7 existing commit counts across Mon-Sun."""
+    vals = [int(plan.get(d, 0)) for d in DAYS_ORDER]
+    if len(set(vals)) > 1:
+        original = list(vals)
+        for _ in range(5):
+            random.shuffle(vals)
+            if vals != original:
+                break
+    return {d: vals[i] for i, d in enumerate(DAYS_ORDER)}
+
+
+async def maybe_shuffle_week(
+    sched: Dict[str, Any],
+    loc_tz: Any,
+    force_next_week: bool = False,
+) -> Optional[Dict[str, int]]:
+    """Shuffles weekly_plan once per week when auto_shuffle_weekly is enabled."""
+    if not sched.get("auto_shuffle_weekly") or not isinstance(sched.get("weekly_plan"), dict):
+        return None
+
+    now_local = datetime.now(loc_tz)
+    target_week = (now_local + timedelta(days=1)).strftime("%G-W%V") if force_next_week else now_local.strftime("%G-W%V")
+    last_week = sched.get("last_shuffled_week")
+
+    if not force_next_week and not last_week:
+        # First time tracking: record current week without shuffling mid-week
+        db = MongoDB.get_db()
+        await db.schedules.update_one(
+            {"schedule_id": sched["schedule_id"]},
+            {"$set": {"last_shuffled_week": target_week}}
+        )
+        sched["last_shuffled_week"] = target_week
+        return None
+
+    if force_next_week or last_week != target_week:
+        new_plan = shuffle_weekly_plan_dict(sched["weekly_plan"])
+        db = MongoDB.get_db()
+        await db.schedules.update_one(
+            {"schedule_id": sched["schedule_id"]},
+            {
+                "$set": {
+                    "weekly_plan": new_plan,
+                    "last_shuffled_week": target_week,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            }
+        )
+        sched["weekly_plan"] = new_plan
+        sched["last_shuffled_week"] = target_week
+        await add_job_to_scheduler(sched)
+        logger.info(f"Auto-shuffled weekly plan for {sched['schedule_id']} (week={target_week}): {new_plan}")
+        return new_plan
+    return None
+
 
 def get_mode_states(sched: Dict[str, Any]) -> tuple[bool, bool]:
     """Returns (weekly_active, deep_green_active) supporting both new dual-state and legacy docs."""
@@ -89,6 +149,9 @@ async def execute_scheduled_commit(schedule_id: str, mode: Optional[str] = None)
     multi_plan = sched.get("multi_repo_plan")
 
     effective_mode = mode or sched.get("schedule_type")
+    if effective_mode == "weekly_planner":
+        await maybe_shuffle_week(sched, loc_tz, force_next_week=False)
+
     # Respect weekly_planner 0-commit days
     if effective_mode == "weekly_planner" and isinstance(sched.get("weekly_plan"), dict):
         target_for_today = sched["weekly_plan"].get(day_name, 0)
@@ -159,42 +222,53 @@ async def execute_scheduled_commit(schedule_id: str, mode: Optional[str] = None)
         )
         logger.info(f"Scheduled commit {schedule_id} executed successfully for {sched['repo']}.")
 
+        # --- Compute local today's commits & check Sunday end-of-week auto-shuffle ---
+        total_executed = (sched.get("total_executions", 0)) + 1
+        today_local_str = datetime.now(loc_tz).strftime("%Y-%m-%d")
+        history = list(sched.get("execution_history", []))
+        history.append(now_iso)
+
+        commits_today = 0
+        for ts in history:
+            if isinstance(ts, str):
+                try:
+                    dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if dt_utc.tzinfo is None:
+                        dt_utc = pytz.utc.localize(dt_utc)
+                    if dt_utc.astimezone(loc_tz).strftime("%Y-%m-%d") == today_local_str:
+                        commits_today += 1
+                except Exception:
+                    pass
+
+        weekly_plan = sched.get("weekly_plan")
+        shuffled_next_plan = None
+        if (
+            effective_mode == "weekly_planner"
+            and day_name == "Sun"
+            and isinstance(weekly_plan, dict)
+            and commits_today >= weekly_plan.get("Sun", 0)
+        ):
+            shuffled_next_plan = await maybe_shuffle_week(sched, loc_tz, force_next_week=True)
+
         # --- Send Instant Telegram Notification to User ---
         try:
             from bot.main import get_bot_app
             from bot.utils.helpers import format_user_datetime
             bot_app = get_bot_app()
             if bot_app and bot_app.bot:
-                total_executed = (sched.get("total_executions", 0)) + 1
-                today_prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                
-                history = sched.get("execution_history", [])
-                history.append(now_iso)
-                
-                commits_today = sum(
-                    1 for ts in history 
-                    if isinstance(ts, str) and ts.startswith(today_prefix)
-                )
-                
-                stype = sched.get("schedule_type", "custom")
+                stype = effective_mode or sched.get("schedule_type", "custom")
                 cpd = sched.get("commits_per_day")
-                weekly_plan = sched.get("weekly_plan")
                 user_tz = sched.get("timezone", "Asia/Kolkata")
 
                 if stype == "weekly_planner" and isinstance(weekly_plan, dict):
-                    try:
-                        loc_tz = pytz.timezone(user_tz)
-                    except Exception:
-                        loc_tz = pytz.timezone("Asia/Kolkata")
-                    day_name = datetime.now(loc_tz).strftime("%a")
                     target_today = weekly_plan.get(day_name, 5)
-                    plan_desc = f"📆 Weekly Planner (Today {day_name}: {target_today} Commits)"
-                elif stype == "custom_daily" or cpd:
-                    target_today = cpd or 24
-                    plan_desc = f"🎯 Custom Daily ({target_today} Commits/Day)"
+                    plan_desc = f"📆 Weekly Schedule (Today {day_name}: {target_today} Commits)"
                 elif stype == "deep_green":
                     target_today = 24
                     plan_desc = "🟢 Deep Green Mode (24 Commits/Day)"
+                elif stype == "custom_daily" or cpd:
+                    target_today = cpd or 24
+                    plan_desc = f"🎯 Custom Daily ({target_today} Commits/Day)"
                 else:
                     target_today = 1
                     plan_desc = f"📅 Cron (<code>{sched.get('cron_expression', 'Daily')}</code>)"
@@ -202,7 +276,13 @@ async def execute_scheduled_commit(schedule_id: str, mode: Optional[str] = None)
                 pending_today = max(0, target_today - commits_today)
                 mode_title = "🚀 SCHEDULED COMMIT EXECUTED!"
                 formatted_time = format_user_datetime(now_iso, user_tz)
-                
+                shuffle_note = (
+                    f"\n🔀 <b>Next Week Auto-Shuffled:</b> <code>"
+                    + ", ".join(f"{d}:{shuffled_next_plan[d]}" for d in DAYS_ORDER)
+                    + "</code>"
+                    if shuffled_next_plan else ""
+                )
+
                 notif_text = (
                     f"<b>{mode_title}</b>\n\n"
                     f"🆔 <b>Schedule ID:</b> <code>{schedule_id}</code>\n"
@@ -214,7 +294,7 @@ async def execute_scheduled_commit(schedule_id: str, mode: Optional[str] = None)
                     f"📊 <b>Today's Activity Metrics:</b>\n"
                     f"• <b>Completed Today:</b> {commits_today} / {target_today} commits\n"
                     f"• <b>Pending Today:</b> {pending_today} pending\n"
-                    f"• <b>Total Lifetime Executions:</b> {total_executed}\n\n"
+                    f"• <b>Total Lifetime Executions:</b> {total_executed}{shuffle_note}\n\n"
                     f"🔗 <a href='https://github.com/{target_repo_full}'>View Repository on GitHub</a>"
                 )
                 await bot_app.bot.send_message(chat_id=telegram_id, text=notif_text, parse_mode="HTML")
@@ -312,13 +392,19 @@ async def create_commit_schedule(
     start_time: Optional[str] = None,
     weekly_plan: Optional[Dict[str, int]] = None,
     multi_repo_plan: Optional[Dict[str, Any]] = None,
-    user_tz: str = "Asia/Kolkata"
+    user_tz: str = "Asia/Kolkata",
+    auto_shuffle_weekly: bool = False,
 ) -> str:
     import uuid
     schedule_id = f"sched_{uuid.uuid4().hex[:10]}"
     
     weekly_active = (schedule_type != "deep_green")
     deep_green_active = (schedule_type == "deep_green")
+    try:
+        loc_tz = pytz.timezone(user_tz)
+    except Exception:
+        loc_tz = pytz.timezone("Asia/Kolkata")
+    cur_week = datetime.now(loc_tz).strftime("%G-W%V")
 
     sched_data = {
         "schedule_id": schedule_id,
@@ -330,6 +416,8 @@ async def create_commit_schedule(
         "schedule_type": schedule_type,
         "weekly_active": weekly_active,
         "deep_green_active": deep_green_active,
+        "auto_shuffle_weekly": bool(auto_shuffle_weekly),
+        "last_shuffled_week": cur_week if auto_shuffle_weekly else None,
         "cron_expression": cron_expression or "",
         "interval_minutes": interval_minutes,
         "commits_per_day": commits_per_day,
@@ -392,6 +480,7 @@ async def update_commit_schedule(
     weekly_plan: Optional[Dict[str, int]] = None,
     weekly_active: Optional[bool] = None,
     deep_green_active: Optional[bool] = None,
+    auto_shuffle_weekly: Optional[bool] = None,
     status: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Updates weekly/deep_green active flags independently, edits weekly plan, and reschedules."""
@@ -431,6 +520,15 @@ async def update_commit_schedule(
         updates["weekly_plan"] = weekly_plan
     elif "weekly_plan" not in sched or not sched.get("weekly_plan"):
         updates["weekly_plan"] = {"Mon": 3, "Tue": 5, "Wed": 5, "Thu": 4, "Fri": 6, "Sat": 2, "Sun": 1}
+
+    if auto_shuffle_weekly is not None:
+        updates["auto_shuffle_weekly"] = bool(auto_shuffle_weekly)
+        if auto_shuffle_weekly and not sched.get("last_shuffled_week"):
+            try:
+                loc_tz = pytz.timezone(sched.get("timezone", "Asia/Kolkata"))
+            except Exception:
+                loc_tz = pytz.timezone("Asia/Kolkata")
+            updates["last_shuffled_week"] = datetime.now(loc_tz).strftime("%G-W%V")
 
     await db.schedules.update_one(
         {"schedule_id": schedule_id, "telegram_id": telegram_id},

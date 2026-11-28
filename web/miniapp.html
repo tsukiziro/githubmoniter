@@ -751,6 +751,14 @@
             <div id="createCalGrid" class="calendar-grid"></div>
             <div id="createDayEditor" class="day-editor"></div>
 
+            <label style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; cursor:pointer; margin-bottom:10px;">
+              <div>
+                <div style="font-size:12px; font-weight:700;">🔀 Auto-Shuffle Every Week</div>
+                <div class="muted">Randomly rotates your Mon–Sun commit counts each new week</div>
+              </div>
+              <input type="checkbox" id="createAutoShuffle" style="width:18px; height:18px; accent-color:var(--accent-bright);" />
+            </label>
+
             <div class="graph-preview">
               <div class="muted" style="display:flex; justify-content:space-between;">
                 <span>4-Week Recurring Preview</span>
@@ -825,6 +833,14 @@
         </div>
         <div id="editCalGrid" class="calendar-grid"></div>
         <div id="editDayEditor" class="day-editor"></div>
+
+        <label style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; cursor:pointer; margin-bottom:12px;">
+          <div>
+            <div style="font-size:12px; font-weight:700;">🔀 Auto-Shuffle Every Week</div>
+            <div class="muted">Randomly rotates your Mon–Sun counts after each week finishes</div>
+          </div>
+          <input type="checkbox" id="editAutoShuffle" style="width:18px; height:18px; accent-color:var(--accent-bright);" />
+        </label>
       </div>
 
       <div id="editDeepBox" class="hidden" style="background: rgba(57, 211, 83, 0.08); border: 1px solid rgba(57, 211, 83, 0.3); border-radius: 10px; padding: 12px; margin-bottom: 12px;">
@@ -1127,6 +1143,7 @@
             commit_message: document.getElementById("commitMsgInput").value.trim() || "Update activity log",
             schedule_type: state.createMode,
             weekly_plan: state.createMode === "weekly_planner" ? state.createPlan : null,
+            auto_shuffle_weekly: state.createMode === "weekly_planner" ? document.getElementById("createAutoShuffle").checked : false,
             timezone: document.getElementById("timezoneInput").value.trim() || "Asia/Kolkata"
           })
         });
@@ -1176,7 +1193,7 @@
             <!-- Weekly Schedule Box -->
             <div style="background:var(--bg); border:1px solid var(--border); border-radius:11px; padding:10px; margin-bottom:8px;">
               <div style="display:flex; align-items:center; justify-content:space-between; gap:6px;">
-                <span style="font-size:12px; font-weight:700;">📆 Weekly Schedule <span class="muted">(${totalWeek}/wk)</span></span>
+                <span style="font-size:12px; font-weight:700;">📆 Weekly Schedule <span class="muted">(${totalWeek}/wk${s.auto_shuffle_weekly ? " • 🔀 Auto" : ""})</span></span>
                 <span class="badge ${wActive ? "badge-active" : "badge-paused"}">${wActive ? "● On" : "⏸ Stopped"}</span>
               </div>
               <div class="mini-week">
@@ -1269,6 +1286,7 @@
       state.editSelectedDay = "Mon";
 
       document.getElementById("editModalRepo").textContent = `📦 ${sched.repo}`;
+      document.getElementById("editAutoShuffle").checked = Boolean(sched.auto_shuffle_weekly);
       setEditMode("weekly_planner");
       renderCalendar("edit");
       document.getElementById("editModal").classList.add("open");
@@ -1294,7 +1312,8 @@
         await api(`/api/miniapp/schedules/${state.editScheduleId}`, {
           method: "PATCH",
           body: JSON.stringify({
-            weekly_plan: state.editPlan
+            weekly_plan: state.editPlan,
+            auto_shuffle_weekly: document.getElementById("editAutoShuffle").checked
           })
         });
         haptic("medium");

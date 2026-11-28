@@ -69,6 +69,7 @@ def serialize_schedule(s: Dict[str, Any]) -> Dict[str, Any]:
     w_act, d_act = get_mode_states(doc)
     doc["weekly_active"] = w_act
     doc["deep_green_active"] = d_act
+    doc["auto_shuffle_weekly"] = bool(doc.get("auto_shuffle_weekly", False))
     doc["status"] = "active" if (w_act or d_act) else "paused"
     return doc
 
@@ -81,6 +82,7 @@ class CreateScheduleRequest(BaseModel):
     commit_message: str = "Update activity log"
     schedule_type: str = Field(..., pattern="^(weekly_planner|deep_green)$")
     weekly_plan: Optional[Dict[str, int]] = None
+    auto_shuffle_weekly: bool = False
     timezone: Optional[str] = None
 
 
@@ -89,6 +91,7 @@ class UpdateScheduleRequest(BaseModel):
     weekly_plan: Optional[Dict[str, int]] = None
     weekly_active: Optional[bool] = None
     deep_green_active: Optional[bool] = None
+    auto_shuffle_weekly: Optional[bool] = None
     status: Optional[str] = Field(None, pattern="^(active|paused)$")
 
 
@@ -267,6 +270,7 @@ async def miniapp_create_schedule(
         start_time="now",
         weekly_plan=weekly_plan,
         user_tz=tz,
+        auto_shuffle_weekly=body.auto_shuffle_weekly,
     )
 
     schedules = await get_user_schedules(telegram_id)
@@ -302,6 +306,7 @@ async def miniapp_update_schedule(
         weekly_plan=clean_plan,
         weekly_active=body.weekly_active,
         deep_green_active=body.deep_green_active,
+        auto_shuffle_weekly=body.auto_shuffle_weekly,
         status=body.status,
     )
     if not updated:
