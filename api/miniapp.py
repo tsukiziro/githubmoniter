@@ -118,9 +118,19 @@ async def serve_miniapp():
     return HTMLResponse(content=MINIAPP_HTML_PATH.read_text(encoding="utf-8"))
 
 
+def _schedule_belongs_to(sched: Dict[str, Any], github_username: str) -> bool:
+    """Returns True if a schedule belongs to the given GitHub username."""
+    if not github_username:
+        return True
+    owner = sched.get("github_username") or (
+        sched["repo"].split("/")[0] if "/" in sched.get("repo", "") else ""
+    )
+    return owner.lower() == github_username.lower()
+
+
 @router.get("/api/miniapp/me")
 async def miniapp_me(x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data")):
-    """Returns user GitHub connection status and all commit schedules."""
+    """Returns user GitHub connection status and schedules for the active GitHub account."""
     tg_user = verify_telegram_init_data(x_telegram_init_data)
     telegram_id = int(tg_user["id"])
 
@@ -134,13 +144,15 @@ async def miniapp_me(x_telegram_init_data: str = Header(None, alias="X-Telegram-
             "schedules": [],
         }
 
-    schedules = await get_user_schedules(telegram_id)
+    active_username = user.get("github_username", "")
+    all_schedules = await get_user_schedules(telegram_id)
+    schedules = [s for s in all_schedules if _schedule_belongs_to(s, active_username)]
     accounts = await list_connected_accounts(telegram_id)
     return {
         "connected": True,
         "telegram_id": telegram_id,
         "first_name": tg_user.get("first_name", "Developer"),
-        "github_username": user.get("github_username", ""),
+        "github_username": active_username,
         "auth_method": user.get("auth_method", "oauth").upper(),
         "timezone": user.get("timezone", "Asia/Kolkata"),
         "notifications": user.get("notifications", True),
@@ -295,7 +307,8 @@ async def miniapp_create_schedule(
         github_username=username,
     )
 
-    schedules = await get_user_schedules(telegram_id)
+    all_schedules = await get_user_schedules(telegram_id)
+    schedules = [s for s in all_schedules if _schedule_belongs_to(s, username)]
     created = next((s for s in schedules if s["schedule_id"] == schedule_id), None)
     return {
         "ok": True,
@@ -375,7 +388,8 @@ async def miniapp_stats(x_telegram_init_data: str = Header(None, alias="X-Telegr
     today_local = today_local_dt.strftime("%Y-%m-%d")
     day_name = today_local_dt.strftime("%a")
 
-    schedules = await get_user_schedules(telegram_id)
+    all_schedules = await get_user_schedules(telegram_id)
+    schedules = [s for s in all_schedules if _schedule_belongs_to(s, username)]
     bot_total_commits = 0
     bot_today_commits = 0
     bot_today_target = 0
