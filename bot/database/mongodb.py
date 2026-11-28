@@ -41,6 +41,9 @@ class MongoDB:
             
             # Monitoring settings index
             await db.monitoring_settings.create_index("telegram_id", unique=True)
+
+            # Sub-admins index
+            await db.subadmins.create_index("telegram_id", unique=True)
             
             # Purge repositories_cache collection completely from database
             try:
@@ -420,5 +423,102 @@ async def get_admin_dashboard_stats() -> Dict[str, Any]:
         "new_7d": new_7d,
         "total_schedules": total_schedules,
         "active_schedules": active_schedules
+    }
+
+
+def get_main_admin_id() -> int:
+    return int(os.getenv("ADMIN_ID", 1447828370))
+
+
+async def get_admin_role(telegram_id: int) -> str:
+    """Returns 'admin', 'subadmin', or 'user'."""
+    if telegram_id == get_main_admin_id():
+        return "admin"
+    db = MongoDB.get_db()
+    sub = await db.subadmins.find_one({"telegram_id": telegram_id})
+    if sub:
+        return "subadmin"
+    return "user"
+
+
+async def list_subadmins() -> List[Dict[str, Any]]:
+    db = MongoDB.get_db()
+    cursor = db.subadmins.find({}).sort("promoted_at", -1)
+    subs = await cursor.to_list(length=100)
+    res = []
+    for s in subs:
+        s_doc = dict(s)
+        s_doc.pop("_id", None)
+        u = await db.users.find_one({"telegram_id": s_doc["telegram_id"]})
+        s_doc["github_username"] = u.get("github_username", "") if u else ""
+        res.append(s_doc)
+    return res
+
+
+async def add_subadmin(telegram_id: int, promoted_by: int, note: str = "") -> Dict[str, Any]:
+    db = MongoDB.get_db()
+    doc = {
+        "telegram_id": int(telegram_id),
+        "promoted_by": int(promoted_by),
+        "note": note.strip(),
+        "promoted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.subadmins.update_one(
+        {"telegram_id": int(telegram_id)},
+        {"$set": doc},
+        upsert=True,
+    )
+    return doc
+
+
+async def remove_subadmin(telegram_id: int) -> bool:
+    db = MongoDB.get_db()
+    res = await db.subadmins.delete_one({"telegram_id": int(telegram_id)})
+    return res.deleted_count > 0
+
+
+async def get_admin_users_overview() -> Dict[str, Any]:
+    """Returns detailed user directory + aggregate total commits across all users."""
+    db = MongoDB.get_db()
+    users = await db.users.find({}).to_list(length=5000)
+    schedules = await db.schedules.find({}).to_list(length=10000)
+    subadmins = await db.subadmins.find({}).to_list(length=100)
+    sub_ids = {int(s["telegram_id"]) for s in subadmins}
+    main_id = get_main_admin_id()
+
+    sched_by_user: Dict[int, List[Dict[str, Any]]] = {}
+    total_bot_commits = 0
+    for s in schedules:
+        tid = s.get("telegram_id")
+        if tid is not None:
+            sched_by_user.setdefault(int(tid), []).append(s)
+        total_bot_commits += int(s.get("total_executions") or 0)
+
+    user_rows = []
+    for u in users:
+        tid = int(u["telegram_id"])
+        u_scheds = sched_by_user.get(tid, [])
+        active_cnt = sum(1 for s in u_scheds if s.get("status") == "active")
+        u_commits = sum(int(s.get("total_executions") or 0) for s in u_scheds)
+        accs = [a.get("github_username") for a in normalize_user_accounts(u) if a.get("github_username")]
+        role = "admin" if tid == main_id else ("subadmin" if tid in sub_ids else "user")
+        user_rows.append({
+            "telegram_id": tid,
+            "github_username": u.get("github_username", ""),
+            "accounts": accs,
+            "auth_method": (u.get("auth_method") or "oauth").upper(),
+            "timezone": u.get("timezone", "Asia/Kolkata"),
+            "notifications": u.get("notifications", True),
+            "connected_at": u.get("connected_at", ""),
+            "schedules_count": len(u_scheds),
+            "active_schedules_count": active_cnt,
+            "total_commits": u_commits,
+            "role": role,
+        })
+
+    user_rows.sort(key=lambda r: r["total_commits"], reverse=True)
+    return {
+        "users": user_rows,
+        "total_bot_commits": total_bot_commits,
     }
 

@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any
 from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Request, HTTPException, Header, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 from bot.services.auth_service import (
@@ -34,6 +34,15 @@ from bot.database.mongodb import (
     switch_active_account,
     MAX_GITHUB_ACCOUNTS,
     MongoDB,
+    get_admin_role,
+    get_main_admin_id,
+    list_subadmins,
+    add_subadmin,
+    remove_subadmin,
+    get_admin_users_overview,
+    get_admin_dashboard_stats,
+    get_all_registered_users,
+    delete_user,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,12 +143,14 @@ async def miniapp_me(x_telegram_init_data: str = Header(None, alias="X-Telegram-
     tg_user = verify_telegram_init_data(x_telegram_init_data)
     telegram_id = int(tg_user["id"])
 
+    role = await get_admin_role(telegram_id)
     token, user = await get_user_decrypted_token(telegram_id)
     if not token or not user:
         return {
             "connected": False,
             "telegram_id": telegram_id,
             "first_name": tg_user.get("first_name", "Developer"),
+            "role": role,
             "oauth_url": generate_oauth_url(telegram_id),
             "schedules": [],
         }
@@ -152,6 +163,7 @@ async def miniapp_me(x_telegram_init_data: str = Header(None, alias="X-Telegram-
         "connected": True,
         "telegram_id": telegram_id,
         "first_name": tg_user.get("first_name", "Developer"),
+        "role": role,
         "github_username": active_username,
         "auth_method": user.get("auth_method", "oauth").upper(),
         "timezone": user.get("timezone", "Asia/Kolkata"),
@@ -651,4 +663,224 @@ async def miniapp_disconnect(
         "oauth_url": generate_oauth_url(telegram_id),
         "accounts": await list_connected_accounts(telegram_id),
     }
+
+
+# ==========================================
+# ADMIN & SUB-ADMIN MINI APP ENDPOINTS
+# ==========================================
+
+async def _require_admin_or_subadmin(init_data: str) -> tuple[int, str]:
+    tg_user = verify_telegram_init_data(init_data)
+    telegram_id = int(tg_user["id"])
+    role = await get_admin_role(telegram_id)
+    if role not in ("admin", "subadmin"):
+        raise HTTPException(status_code=403, detail="Admin privileges required.")
+    return telegram_id, role
+
+
+class PromoteSubadminRequest(BaseModel):
+    telegram_id: int
+    note: str = ""
+
+
+class BroadcastRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+@router.get("/api/miniapp/admin/overview")
+async def miniapp_admin_overview(x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data")):
+    """Returns admin stats, user directory, and subadmins list."""
+    telegram_id, role = await _require_admin_or_subadmin(x_telegram_init_data)
+    stats = await get_admin_dashboard_stats()
+    overview = await get_admin_users_overview()
+    subadmins = await list_subadmins()
+    scheduler = get_scheduler()
+
+    return {
+        "role": role,
+        "main_admin_id": get_main_admin_id(),
+        "stats": {
+            **stats,
+            "total_bot_commits": overview["total_bot_commits"],
+            "apscheduler_jobs": len(scheduler.get_jobs()),
+        },
+        "users": overview["users"],
+        "subadmins": subadmins,
+    }
+
+
+@router.post("/api/miniapp/admin/subadmins")
+async def miniapp_promote_subadmin(
+    body: PromoteSubadminRequest,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Main Admin ONLY: promotes a Telegram user ID to Sub-Admin."""
+    telegram_id, role = await _require_admin_or_subadmin(x_telegram_init_data)
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Only the Main Admin can promote Sub-Admins.")
+    if body.telegram_id == get_main_admin_id():
+        raise HTTPException(status_code=400, detail="Cannot modify the Main Admin role.")
+
+    doc = await add_subadmin(body.telegram_id, promoted_by=telegram_id, note=body.note)
+    doc.pop("_id", None)
+    return {"ok": True, "subadmin": doc}
+
+
+@router.delete("/api/miniapp/admin/subadmins/{target_id}")
+async def miniapp_demote_subadmin(
+    target_id: int,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Main Admin ONLY: removes a Sub-Admin."""
+    _, role = await _require_admin_or_subadmin(x_telegram_init_data)
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Only the Main Admin can remove Sub-Admins.")
+    if target_id == get_main_admin_id():
+        raise HTTPException(status_code=400, detail="Cannot demote the Main Admin.")
+
+    removed = await remove_subadmin(target_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Sub-Admin not found.")
+    return {"ok": True}
+
+
+@router.delete("/api/miniapp/admin/users/{target_id}")
+async def miniapp_admin_remove_user(
+    target_id: int,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Admin or Sub-Admin: removes a user & stops their schedules. Sub-Admins cannot remove Admins/Sub-Admins."""
+    caller_id, caller_role = await _require_admin_or_subadmin(x_telegram_init_data)
+    target_role = await get_admin_role(target_id)
+
+    if target_id == get_main_admin_id() or target_role == "admin":
+        raise HTTPException(status_code=403, detail="Cannot remove the Main Admin.")
+    if caller_role == "subadmin" and target_role == "subadmin":
+        raise HTTPException(status_code=403, detail="Sub-Admins cannot remove other Sub-Admins.")
+    if target_id == caller_id:
+        raise HTTPException(status_code=400, detail="You cannot remove yourself from the Admin panel.")
+
+    schedules = await get_user_schedules(target_id)
+    scheduler = get_scheduler()
+    for s in schedules:
+        _remove_all_jobs_for_schedule(scheduler, s["schedule_id"])
+
+    if target_role == "subadmin":
+        await remove_subadmin(target_id)
+    await delete_user(target_id)
+    return {"ok": True}
+
+
+@router.post("/api/miniapp/admin/broadcast")
+async def miniapp_admin_broadcast(
+    body: BroadcastRequest,
+    request: Request,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Admin or Sub-Admin: broadcasts a message to all registered bot users."""
+    await _require_admin_or_subadmin(x_telegram_init_data)
+    bot_app = getattr(request.app.state, "bot_app", None)
+    if not bot_app or not hasattr(bot_app, "bot"):
+        raise HTTPException(status_code=503, detail="Bot instance is not ready.")
+
+    users = await get_all_registered_users()
+    sent = 0
+    failed = 0
+    msg_text = f"📢 <b>Announcement from GitHub Guardian</b>\n\n{body.message.strip()}"
+
+    for u in users:
+        tid = u.get("telegram_id")
+        if not tid:
+            continue
+        try:
+            await bot_app.bot.send_message(chat_id=tid, text=msg_text, parse_mode="HTML")
+            sent += 1
+        except Exception:
+            failed += 1
+
+    return {"ok": True, "sent": sent, "failed": failed, "total": len(users)}
+
+
+def _build_export_bytes(fmt: str, overview: Dict[str, Any]) -> tuple[bytes, str, str]:
+    import csv
+    import io
+
+    users = overview["users"]
+    if fmt == "json":
+        payload = json.dumps(
+            {
+                "exported_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                "total_users": len(users),
+                "total_bot_commits": overview["total_bot_commits"],
+                "users": users,
+            },
+            indent=2,
+        ).encode("utf-8")
+        return payload, "github_guardian_users.json", "application/json"
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "Telegram ID", "Role", "Active GitHub", "All Connected Accounts",
+        "Auth Method", "Timezone", "Notifications", "Schedules Count",
+        "Active Schedules", "Total Commits Pushed", "Connected At",
+    ])
+    for u in users:
+        writer.writerow([
+            u["telegram_id"],
+            u["role"],
+            u["github_username"],
+            " | ".join(u["accounts"]),
+            u["auth_method"],
+            u["timezone"],
+            u["notifications"],
+            u["schedules_count"],
+            u["active_schedules_count"],
+            u["total_commits"],
+            u["connected_at"],
+        ])
+    return buf.getvalue().encode("utf-8"), "github_guardian_users.csv", "text/csv"
+
+
+@router.get("/api/miniapp/admin/export")
+async def miniapp_admin_export_download(
+    format: str = Query("csv", pattern="^(csv|json)$"),
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Downloads user data as CSV or JSON."""
+    await _require_admin_or_subadmin(x_telegram_init_data)
+    overview = await get_admin_users_overview()
+    data_bytes, filename, media_type = _build_export_bytes(format, overview)
+    return Response(
+        content=data_bytes,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/api/miniapp/admin/export/send")
+async def miniapp_admin_export_to_chat(
+    request: Request,
+    format: str = Query("csv", pattern="^(csv|json)$"),
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Sends the CSV or JSON export file directly to the admin's Telegram chat."""
+    import io
+    telegram_id, _ = await _require_admin_or_subadmin(x_telegram_init_data)
+    bot_app = getattr(request.app.state, "bot_app", None)
+    if not bot_app or not hasattr(bot_app, "bot"):
+        raise HTTPException(status_code=503, detail="Bot instance is not ready.")
+
+    overview = await get_admin_users_overview()
+    data_bytes, filename, _ = _build_export_bytes(format, overview)
+    bio = io.BytesIO(data_bytes)
+    bio.name = filename
+    await bot_app.bot.send_document(
+        chat_id=telegram_id,
+        document=bio,
+        filename=filename,
+        caption=f"📥 <b>GitHub Guardian Export ({format.upper()})</b>\nTotal Users: {len(overview['users'])}",
+        parse_mode="HTML",
+    )
+    return {"ok": True, "filename": filename}
 
