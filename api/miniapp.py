@@ -354,18 +354,24 @@ async def miniapp_stats(x_telegram_init_data: str = Header(None, alias="X-Telegr
         loc_tz = pytz.timezone(user_tz)
     except Exception:
         loc_tz = pytz.timezone("Asia/Kolkata")
-    today_local = datetime.now(loc_tz).strftime("%Y-%m-%d")
+    today_local_dt = datetime.now(loc_tz)
+    today_local = today_local_dt.strftime("%Y-%m-%d")
+    day_name = today_local_dt.strftime("%a")
 
     schedules = await get_user_schedules(telegram_id)
     bot_total_commits = 0
     bot_today_commits = 0
+    bot_today_target = 0
     active_schedules = 0
+    today_schedules = []
 
     for s in schedules:
         bot_total_commits += int(s.get("total_executions") or 0)
         w_act, d_act = get_mode_states(s)
         if w_act or d_act:
             active_schedules += 1
+
+        sched_completed = 0
         for ts in s.get("execution_history", []):
             if isinstance(ts, str):
                 try:
@@ -374,8 +380,31 @@ async def miniapp_stats(x_telegram_init_data: str = Header(None, alias="X-Telegr
                         dt_utc = pytz.utc.localize(dt_utc)
                     if dt_utc.astimezone(loc_tz).strftime("%Y-%m-%d") == today_local:
                         bot_today_commits += 1
+                        sched_completed += 1
                 except Exception:
                     pass
+
+        sched_target = 0
+        if w_act:
+            if isinstance(s.get("weekly_plan"), dict):
+                sched_target += int(s["weekly_plan"].get(day_name, 0))
+            else:
+                sched_target += int(s.get("commits_per_day") or 0)
+        if d_act:
+            sched_target += 24
+
+        bot_today_target += sched_target
+        today_schedules.append({
+            "schedule_id": s.get("schedule_id"),
+            "repo": s.get("repo"),
+            "weekly_active": w_act,
+            "deep_green_active": d_act,
+            "completed_today": sched_completed,
+            "target_today": sched_target,
+            "pending_today": max(0, sched_target - sched_completed),
+        })
+
+    bot_today_pending = max(0, bot_today_target - bot_today_commits)
 
     client = GitHubAPIClient(token)
     gh_user = {}
@@ -450,6 +479,10 @@ async def miniapp_stats(x_telegram_init_data: str = Header(None, alias="X-Telegr
         "weeks": recent_weeks,
         "bot_total_commits": bot_total_commits,
         "bot_today_commits": bot_today_commits,
+        "bot_today_target": bot_today_target,
+        "bot_today_pending": bot_today_pending,
+        "today_day": day_name,
+        "today_schedules": today_schedules,
         "active_schedules": active_schedules,
     }
 

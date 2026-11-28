@@ -899,6 +899,17 @@
             </div>
           </div>
 
+          <div style="background:var(--bg); border:1px solid var(--border); border-radius:11px; padding:11px 12px; margin-bottom:12px;">
+            <div class="card-title" style="margin-bottom:8px;">
+              <span id="todaySchedTitle">⏰ Today's Commit Schedule</span>
+              <span class="muted" id="todaySchedSummary">—</span>
+            </div>
+            <div style="height:7px; background:var(--surface-2); border-radius:999px; overflow:hidden; margin-bottom:10px;">
+              <div id="todaySchedBar" style="height:100%; width:0%; background:var(--accent-bright); transition:width 0.3s ease;"></div>
+            </div>
+            <div id="todaySchedList" style="display:flex; flex-direction:column; gap:8px;"></div>
+          </div>
+
           <div class="card-title">
             <span>📅 Contribution Graph (Last 20 Weeks)</span>
             <span class="muted" id="hmTooltip">Tap any square</span>
@@ -1540,6 +1551,44 @@
         document.getElementById("kpiYear").textContent = Number(s.total_contributions || 0).toLocaleString();
         document.getElementById("kpiBotTotal").textContent = Number(s.bot_total_commits || 0).toLocaleString();
         document.getElementById("statsTodayVal").textContent = `${s.today_contributions} GitHub / ${s.bot_today_commits} Bot`;
+
+        const tDone = Number(s.bot_today_commits || 0);
+        const tTarget = Number(s.bot_today_target || 0);
+        const tPend = Number(s.bot_today_pending || 0);
+        const pct = tTarget > 0 ? Math.min(100, Math.round((tDone / tTarget) * 100)) : (tDone > 0 ? 100 : 0);
+        document.getElementById("todaySchedTitle").textContent = `⏰ Today's Schedule (${s.today_day || "Today"})`;
+        document.getElementById("todaySchedSummary").textContent = `${tDone} completed • ${tPend} pending`;
+        document.getElementById("todaySchedBar").style.width = `${pct}%`;
+
+        const listEl = document.getElementById("todaySchedList");
+        const items = s.today_schedules || [];
+        if (!items.length) {
+          listEl.innerHTML = `<div class="muted">No schedules configured yet.</div>`;
+        } else {
+          listEl.innerHTML = items.map(item => {
+            const p = item.target_today > 0 ? Math.min(100, Math.round((item.completed_today / item.target_today) * 100)) : 0;
+            const modes = [];
+            if (item.weekly_active) modes.push("📆 Weekly");
+            if (item.deep_green_active) modes.push("🟢 Deep Green");
+            const modeLabel = modes.length ? modes.join(" + ") : "⏸ Stopped";
+            return `
+              <div style="background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:8px 10px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:4px;">
+                  <span style="font-size:12px; font-weight:700; word-break:break-all;">📦 ${item.repo}</span>
+                  <span class="muted" style="white-space:nowrap;">${modeLabel}</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:5px;">
+                  <span style="color:var(--accent-bright);">✅ Completed: <b>${item.completed_today}</b></span>
+                  <span style="color:var(--warn);">⏳ Pending: <b>${item.pending_today}</b></span>
+                  <span class="muted">🎯 Target: <b>${item.target_today}</b></span>
+                </div>
+                <div style="height:5px; background:var(--bg); border-radius:999px; overflow:hidden;">
+                  <div style="height:100%; width:${p}%; background:var(--accent-bright);"></div>
+                </div>
+              </div>
+            `;
+          }).join("");
+        }
 
         const hm = document.getElementById("heatmapGrid");
         hm.innerHTML = (s.weeks || []).map(week => `
