@@ -255,7 +255,7 @@ async def execute_scheduled_commit(schedule_id: str, mode: Optional[str] = None)
             from bot.main import get_bot_app
             from bot.utils.helpers import format_user_datetime
             bot_app = get_bot_app()
-            if bot_app and bot_app.bot:
+            if bot_app and bot_app.bot and user.get("notifications", True):
                 stype = effective_mode or sched.get("schedule_type", "custom")
                 cpd = sched.get("commits_per_day")
                 user_tz = sched.get("timezone", "Asia/Kolkata")

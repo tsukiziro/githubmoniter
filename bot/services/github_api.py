@@ -186,3 +186,43 @@ class GitHubAPIClient:
 
     async def get_repo_forks(self, owner: str, repo: str) -> List[Dict[str, Any]]:
         return await self._request("GET", f"/repos/{owner}/{repo}/forks")
+
+    async def get_contribution_calendar(self, username: str) -> Dict[str, Any]:
+        """Fetches user's GitHub GraphQL contribution calendar & profile stats."""
+        query = """
+        query($login: String!) {
+          user(login: $login) {
+            avatarUrl
+            followers { totalCount }
+            repositories(privacy: PUBLIC) { totalCount }
+            contributionsCollection {
+              contributionCalendar {
+                totalContributions
+                weeks {
+                  contributionDays {
+                    date
+                    contributionCount
+                    contributionLevel
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(
+                    "https://api.github.com/graphql",
+                    headers=self.headers,
+                    json={"query": query, "variables": {"login": username}},
+                    timeout=15.0,
+                )
+                if resp.status_code >= 400:
+                    raise GitHubAPIException(f"GraphQL error ({resp.status_code})", resp.status_code)
+                payload = resp.json()
+                if payload.get("errors"):
+                    raise GitHubAPIException(payload["errors"][0].get("message", "GraphQL error"))
+                return payload.get("data", {}).get("user") or {}
+            except httpx.RequestError as e:
+                raise GitHubAPIException("Network error while fetching GitHub contributions.") from e

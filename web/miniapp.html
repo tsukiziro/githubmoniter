@@ -108,8 +108,8 @@
     /* Tabs */
     .tabs {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
       background: var(--surface);
       border: 1px solid var(--border);
       padding: 4px;
@@ -122,12 +122,68 @@
       background: transparent;
       color: var(--muted);
       font-weight: 600;
-      font-size: 13px;
-      padding: 10px;
+      font-size: 12px;
+      padding: 9px 4px;
       border-radius: 9px;
       cursor: pointer;
       transition: all 0.18s ease;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
+
+    /* Stats KPI Grid & Live Heatmap */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .kpi-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      padding: 11px 12px;
+    }
+
+    .kpi-val {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--accent-bright);
+      margin-top: 2px;
+    }
+
+    .heatmap-scroll {
+      overflow-x: auto;
+      padding-bottom: 6px;
+    }
+
+    .heatmap-weeks {
+      display: flex;
+      gap: 4px;
+      min-width: max-content;
+    }
+
+    .heatmap-col {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .hm-cell {
+      width: 13px;
+      height: 13px;
+      border-radius: 3px;
+      background: var(--g0);
+      border: 1px solid rgba(255,255,255,0.05);
+      cursor: pointer;
+    }
+
+    .hm-cell.lvl-1 { background: var(--g1); border-color: #196c2e; }
+    .hm-cell.lvl-2 { background: var(--g2); border-color: #2ea043; }
+    .hm-cell.lvl-3 { background: var(--g3); border-color: #3fb950; }
+    .hm-cell.lvl-4 { background: var(--g4); border-color: #7ee787; }
 
     .tab-btn.active {
       background: var(--accent);
@@ -661,8 +717,10 @@
     <!-- Main App View -->
     <div id="mainView" class="hidden">
       <div class="tabs">
-        <button class="tab-btn active" id="tabSchedules" onclick="switchTab('schedules')">⏰ My Schedules</button>
-        <button class="tab-btn" id="tabCreate" onclick="switchTab('create')">➕ New Schedule</button>
+        <button class="tab-btn active" id="tabSchedules" onclick="switchTab('schedules')">⏰ Tasks</button>
+        <button class="tab-btn" id="tabCreate" onclick="switchTab('create')">➕ New</button>
+        <button class="tab-btn" id="tabStats" onclick="switchTab('stats')">📊 Stats</button>
+        <button class="tab-btn" id="tabSettings" onclick="switchTab('settings')">⚙️ Settings</button>
       </div>
 
       <!-- TAB 1: My Schedules -->
@@ -797,6 +855,109 @@
           <button type="button" class="btn btn-primary" id="createSubmitBtn" onclick="submitNewSchedule()">🚀 Create & Start Schedule</button>
         </div>
       </div>
+
+      <!-- TAB 3: Live Streak & Contribution Graph -->
+      <div id="panelStats" class="hidden">
+        <div class="card">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px;">
+            <div style="display:flex; align-items:center; gap:10px;">
+              <img id="statsAvatar" src="" alt="" style="width:42px; height:42px; border-radius:50%; border:1px solid var(--border); display:none;" />
+              <div>
+                <div id="statsUsername" style="font-weight:700; font-size:15px;">Loading...</div>
+                <div id="statsMeta" class="muted">Fetching GitHub contributions...</div>
+              </div>
+            </div>
+            <button type="button" class="btn btn-sm" onclick="loadStats(true)">🔄</button>
+          </div>
+
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <div class="muted">🔥 Current Streak</div>
+              <div class="kpi-val" id="kpiStreak">—</div>
+            </div>
+            <div class="kpi-card">
+              <div class="muted">🏆 Longest Streak</div>
+              <div class="kpi-val" id="kpiLongest">—</div>
+            </div>
+            <div class="kpi-card">
+              <div class="muted">🟩 Year Contributions</div>
+              <div class="kpi-val" id="kpiYear">—</div>
+            </div>
+            <div class="kpi-card">
+              <div class="muted">🤖 Bot Total Pushed</div>
+              <div class="kpi-val" id="kpiBotTotal">—</div>
+            </div>
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:12px;">
+            <div>
+              <div style="font-size:12px; font-weight:700;">Today's Activity</div>
+              <div class="muted" id="statsTodayLabel">GitHub + Bot commits today</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-weight:800; color:var(--accent-bright);" id="statsTodayVal">—</div>
+            </div>
+          </div>
+
+          <div class="card-title">
+            <span>📅 Contribution Graph (Last 20 Weeks)</span>
+            <span class="muted" id="hmTooltip">Tap any square</span>
+          </div>
+          <div class="heatmap-scroll">
+            <div id="heatmapGrid" class="heatmap-weeks"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 4: Timezone & Settings -->
+      <div id="panelSettings" class="hidden">
+        <div class="card">
+          <div class="card-title"><span>👤 Connected Account</span></div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <span class="muted">GitHub Username</span>
+            <strong id="setUsername">—</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span class="muted">Authentication</span>
+            <strong id="setAuthMethod">—</strong>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>🌐 Timezone Settings</span>
+            <span class="muted">Syncs all schedules</span>
+          </div>
+          <div class="quick-nums" style="margin-bottom:10px;">
+            <span class="qnum" onclick="pickTimezone('Asia/Kolkata')">Asia/Kolkata</span>
+            <span class="qnum" onclick="pickTimezone('UTC')">UTC</span>
+            <span class="qnum" onclick="pickTimezone('America/New_York')">America/New_York</span>
+            <span class="qnum" onclick="pickTimezone('Europe/London')">Europe/London</span>
+            <span class="qnum" onclick="pickTimezone('Asia/Dubai')">Asia/Dubai</span>
+            <span class="qnum" onclick="pickTimezone('Asia/Tokyo')">Asia/Tokyo</span>
+          </div>
+          <div class="input-row">
+            <input type="text" id="settingsTzInput" placeholder="e.g. Asia/Kolkata" />
+            <button type="button" class="btn btn-blue" id="saveTzBtn" onclick="saveTimezoneSetting()">Save</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <label style="display:flex; align-items:center; justify-content:space-between; gap:10px; cursor:pointer;">
+            <div>
+              <div style="font-size:13px; font-weight:700;">🔔 Commit Notifications</div>
+              <div class="muted">Send Telegram alert after each scheduled commit</div>
+            </div>
+            <input type="checkbox" id="settingsNotifToggle" onchange="saveNotificationSetting()" style="width:20px; height:20px; accent-color:var(--accent-bright);" />
+          </label>
+        </div>
+
+        <div class="card" style="border-color: rgba(248, 81, 73, 0.35);">
+          <div class="card-title"><span style="color: var(--danger);">🔌 Account Danger Zone</span></div>
+          <p class="muted" style="margin:0 0 12px;">Disconnecting removes your encrypted GitHub token and stops all active schedules.</p>
+          <button type="button" class="btn btn-danger" style="width:100%;" onclick="disconnectAccount()">Disconnect GitHub Account</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -923,10 +1084,17 @@
       haptic("light");
       document.getElementById("tabSchedules").classList.toggle("active", tab === "schedules");
       document.getElementById("tabCreate").classList.toggle("active", tab === "create");
+      document.getElementById("tabStats").classList.toggle("active", tab === "stats");
+      document.getElementById("tabSettings").classList.toggle("active", tab === "settings");
       document.getElementById("panelSchedules").classList.toggle("hidden", tab !== "schedules");
       document.getElementById("panelCreate").classList.toggle("hidden", tab !== "create");
+      document.getElementById("panelStats").classList.toggle("hidden", tab !== "stats");
+      document.getElementById("panelSettings").classList.toggle("hidden", tab !== "settings");
       if (tab === "create" && !state.reposLoaded) {
         loadQuickRepos();
+      }
+      if (tab === "stats" && !state.statsLoaded) {
+        loadStats();
       }
     }
 
@@ -1341,6 +1509,10 @@
         }
         document.getElementById("userPill").textContent = `@${data.github_username}`;
         document.getElementById("timezoneInput").value = data.timezone || "Asia/Kolkata";
+        document.getElementById("settingsTzInput").value = data.timezone || "Asia/Kolkata";
+        document.getElementById("setUsername").textContent = `@${data.github_username}`;
+        document.getElementById("setAuthMethod").textContent = data.auth_method || "OAUTH";
+        document.getElementById("settingsNotifToggle").checked = data.notifications !== false;
         document.getElementById("notConnectedView").classList.add("hidden");
         document.getElementById("mainView").classList.remove("hidden");
         state.schedules = data.schedules || [];
@@ -1348,6 +1520,98 @@
       } catch (err) {
         document.getElementById("userPill").textContent = "Open in Telegram";
         showToast("Please open this Mini App inside Telegram.");
+      }
+    }
+
+    async function loadStats(force = false) {
+      if (state.statsLoaded && !force) return;
+      try {
+        const s = await api("/api/miniapp/stats");
+        state.statsLoaded = true;
+        if (s.avatar_url) {
+          const av = document.getElementById("statsAvatar");
+          av.src = s.avatar_url;
+          av.style.display = "block";
+        }
+        document.getElementById("statsUsername").textContent = `@${s.github_username}`;
+        document.getElementById("statsMeta").textContent = `${s.public_repos} public repos • ${s.followers} followers`;
+        document.getElementById("kpiStreak").textContent = `${s.current_streak}d`;
+        document.getElementById("kpiLongest").textContent = `${s.longest_streak}d`;
+        document.getElementById("kpiYear").textContent = Number(s.total_contributions || 0).toLocaleString();
+        document.getElementById("kpiBotTotal").textContent = Number(s.bot_total_commits || 0).toLocaleString();
+        document.getElementById("statsTodayVal").textContent = `${s.today_contributions} GitHub / ${s.bot_today_commits} Bot`;
+
+        const hm = document.getElementById("heatmapGrid");
+        hm.innerHTML = (s.weeks || []).map(week => `
+          <div class="heatmap-col">
+            ${week.map(day => `<div class="hm-cell ${day.level ? "lvl-" + day.level : ""}" onclick="showDayTip('${day.date}', ${day.count})"></div>`).join("")}
+          </div>
+        `).join("");
+        // Scroll heatmap to the latest week on the right
+        const scroller = hm.parentElement;
+        if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    function showDayTip(date, count) {
+      haptic("light");
+      document.getElementById("hmTooltip").textContent = `${count} commits on ${date}`;
+    }
+
+    function pickTimezone(tz) {
+      haptic("light");
+      document.getElementById("settingsTzInput").value = tz;
+    }
+
+    async function saveTimezoneSetting() {
+      const tz = document.getElementById("settingsTzInput").value.trim();
+      if (!tz) {
+        showToast("Enter a timezone name");
+        return;
+      }
+      const btn = document.getElementById("saveTzBtn");
+      btn.disabled = true;
+      try {
+        const res = await api("/api/miniapp/settings", {
+          method: "PATCH",
+          body: JSON.stringify({ timezone: tz })
+        });
+        document.getElementById("timezoneInput").value = res.timezone;
+        haptic("medium");
+        showToast(`✅ Timezone updated to ${res.timezone}`);
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function saveNotificationSetting() {
+      const enabled = document.getElementById("settingsNotifToggle").checked;
+      haptic("light");
+      try {
+        await api("/api/miniapp/settings", {
+          method: "PATCH",
+          body: JSON.stringify({ notifications: enabled })
+        });
+        showToast(enabled ? "🔔 Notifications enabled" : "🔕 Notifications muted");
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    async function disconnectAccount() {
+      if (!confirm("Disconnect your GitHub account and stop all active schedules?")) return;
+      haptic("heavy");
+      try {
+        await api("/api/miniapp/disconnect", { method: "POST" });
+        showToast("🔌 Account disconnected");
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
       }
     }
 

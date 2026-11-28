@@ -11,15 +11,18 @@ from fastapi import APIRouter, Request, HTTPException, Header, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from bot.services.auth_service import get_user_decrypted_token, generate_oauth_url
+from bot.services.auth_service import get_user_decrypted_token, generate_oauth_url, disconnect_user_account
 from bot.services.github_api import GitHubAPIClient, GitHubAPIException
 from bot.services.scheduler_service import (
     create_commit_schedule,
     update_commit_schedule,
     remove_commit_schedule,
     get_mode_states,
+    add_job_to_scheduler,
+    get_scheduler,
+    _remove_all_jobs_for_schedule,
 )
-from bot.database.mongodb import get_user_schedules
+from bot.database.mongodb import get_user_schedules, update_user_settings, MongoDB
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +128,9 @@ async def miniapp_me(x_telegram_init_data: str = Header(None, alias="X-Telegram-
         "telegram_id": telegram_id,
         "first_name": tg_user.get("first_name", "Developer"),
         "github_username": user.get("github_username", ""),
+        "auth_method": user.get("auth_method", "oauth").upper(),
         "timezone": user.get("timezone", "Asia/Kolkata"),
+        "notifications": user.get("notifications", True),
         "schedules": [serialize_schedule(s) for s in schedules],
     }
 
@@ -328,4 +333,195 @@ async def miniapp_delete_schedule(
     if not deleted:
         raise HTTPException(status_code=404, detail="Schedule not found.")
     return {"ok": True}
+
+
+@router.get("/api/miniapp/stats")
+async def miniapp_stats(x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data")):
+    """Returns live GitHub contribution graph, streaks, and bot scheduler execution stats."""
+    import pytz
+    from datetime import datetime, timezone
+
+    tg_user = verify_telegram_init_data(x_telegram_init_data)
+    telegram_id = int(tg_user["id"])
+
+    token, user = await get_user_decrypted_token(telegram_id)
+    if not token or not user:
+        raise HTTPException(status_code=401, detail="GitHub account not connected.")
+
+    username = user.get("github_username", "")
+    user_tz = user.get("timezone", "Asia/Kolkata")
+    try:
+        loc_tz = pytz.timezone(user_tz)
+    except Exception:
+        loc_tz = pytz.timezone("Asia/Kolkata")
+    today_local = datetime.now(loc_tz).strftime("%Y-%m-%d")
+
+    schedules = await get_user_schedules(telegram_id)
+    bot_total_commits = 0
+    bot_today_commits = 0
+    active_schedules = 0
+
+    for s in schedules:
+        bot_total_commits += int(s.get("total_executions") or 0)
+        w_act, d_act = get_mode_states(s)
+        if w_act or d_act:
+            active_schedules += 1
+        for ts in s.get("execution_history", []):
+            if isinstance(ts, str):
+                try:
+                    dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if dt_utc.tzinfo is None:
+                        dt_utc = pytz.utc.localize(dt_utc)
+                    if dt_utc.astimezone(loc_tz).strftime("%Y-%m-%d") == today_local:
+                        bot_today_commits += 1
+                except Exception:
+                    pass
+
+    client = GitHubAPIClient(token)
+    gh_user = {}
+    try:
+        gh_user = await client.get_contribution_calendar(username)
+    except GitHubAPIException as ge:
+        logger.warning(f"Stats GraphQL fetch failed for {username}: {ge}")
+
+    cal = (gh_user.get("contributionsCollection") or {}).get("contributionCalendar") or {}
+    weeks_raw = cal.get("weeks") or []
+    all_days = []
+    for w in weeks_raw:
+        for d in w.get("contributionDays") or []:
+            all_days.append(d)
+
+    # Compute current & longest streak
+    longest_streak = 0
+    running = 0
+    for d in all_days:
+        if (d.get("contributionCount") or 0) > 0:
+            running += 1
+            if running > longest_streak:
+                longest_streak = running
+        else:
+            running = 0
+
+    current_streak = 0
+    # Walk backwards; if today is 0 so far, allow streak starting from yesterday
+    idx = len(all_days) - 1
+    if idx >= 0 and (all_days[idx].get("contributionCount") or 0) == 0:
+        idx -= 1
+    while idx >= 0 and (all_days[idx].get("contributionCount") or 0) > 0:
+        current_streak += 1
+        idx -= 1
+
+    today_gh_commits = 0
+    for d in reversed(all_days):
+        if d.get("date") == today_local:
+            today_gh_commits = int(d.get("contributionCount") or 0)
+            break
+    if today_gh_commits == 0 and all_days:
+        today_gh_commits = int(all_days[-1].get("contributionCount") or 0)
+
+    level_map = {
+        "NONE": 0,
+        "FIRST_QUARTILE": 1,
+        "SECOND_QUARTILE": 2,
+        "THIRD_QUARTILE": 3,
+        "FOURTH_QUARTILE": 4,
+    }
+    recent_weeks = [
+        [
+            {
+                "date": d.get("date"),
+                "count": int(d.get("contributionCount") or 0),
+                "level": level_map.get(d.get("contributionLevel"), 0),
+            }
+            for d in (w.get("contributionDays") or [])
+        ]
+        for w in weeks_raw[-20:]
+    ]
+
+    return {
+        "github_username": username,
+        "avatar_url": gh_user.get("avatarUrl") or "",
+        "public_repos": (gh_user.get("repositories") or {}).get("totalCount", 0),
+        "followers": (gh_user.get("followers") or {}).get("totalCount", 0),
+        "total_contributions": cal.get("totalContributions", 0),
+        "today_contributions": today_gh_commits,
+        "current_streak": current_streak,
+        "longest_streak": longest_streak,
+        "weeks": recent_weeks,
+        "bot_total_commits": bot_total_commits,
+        "bot_today_commits": bot_today_commits,
+        "active_schedules": active_schedules,
+    }
+
+
+class UpdateSettingsRequest(BaseModel):
+    timezone: Optional[str] = None
+    notifications: Optional[bool] = None
+
+
+@router.patch("/api/miniapp/settings")
+async def miniapp_update_settings(
+    body: UpdateSettingsRequest,
+    x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
+):
+    """Updates user timezone (and syncs schedules) or notification preferences."""
+    import pytz
+
+    tg_user = verify_telegram_init_data(x_telegram_init_data)
+    telegram_id = int(tg_user["id"])
+
+    token, user = await get_user_decrypted_token(telegram_id)
+    if not token or not user:
+        raise HTTPException(status_code=401, detail="GitHub account not connected.")
+
+    updates: Dict[str, Any] = {}
+    if body.timezone is not None:
+        tz_clean = body.timezone.strip()
+        try:
+            pytz.timezone(tz_clean)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone '{tz_clean}'. Use an IANA name like Asia/Kolkata or UTC.")
+        updates["timezone"] = tz_clean
+
+    if body.notifications is not None:
+        updates["notifications"] = bool(body.notifications)
+
+    if updates:
+        await update_user_settings(telegram_id, updates)
+
+    if "timezone" in updates:
+        db = MongoDB.get_db()
+        await db.schedules.update_many(
+            {"telegram_id": telegram_id},
+            {"$set": {"timezone": updates["timezone"]}}
+        )
+        schedules = await get_user_schedules(telegram_id)
+        for s in schedules:
+            w_act, d_act = get_mode_states(s)
+            if w_act or d_act:
+                await add_job_to_scheduler(s)
+
+    return {
+        "ok": True,
+        "timezone": updates.get("timezone", user.get("timezone", "Asia/Kolkata")),
+        "notifications": updates.get("notifications", user.get("notifications", True)),
+    }
+
+
+@router.post("/api/miniapp/disconnect")
+async def miniapp_disconnect(x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data")):
+    """Disconnects GitHub account, stops all schedules, and deletes user credentials."""
+    tg_user = verify_telegram_init_data(x_telegram_init_data)
+    telegram_id = int(tg_user["id"])
+
+    schedules = await get_user_schedules(telegram_id)
+    scheduler = get_scheduler()
+    for s in schedules:
+        _remove_all_jobs_for_schedule(scheduler, s["schedule_id"])
+
+    await disconnect_user_account(telegram_id)
+    return {
+        "ok": True,
+        "oauth_url": generate_oauth_url(telegram_id),
+    }
 
