@@ -1,0 +1,1225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>GitHub Guardian — Scheduler</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-2: #1f242c;
+      --border: #30363d;
+      --text: #f0f6fc;
+      --muted: #8b949e;
+      --accent: #2ea043;
+      --accent-bright: #39d353;
+      --blue: #58a6ff;
+      --danger: #f85149;
+      --warn: #d29922;
+      --g0: #161b22;
+      --g1: #0e4429;
+      --g2: #006d32;
+      --g3: #26a641;
+      --g4: #39d353;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.45;
+      padding-bottom: 36px;
+    }
+
+    .container {
+      max-width: 540px;
+      margin: 0 auto;
+      padding: 14px;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      background: linear-gradient(135deg, #161b22 0%, #0f1722 100%);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      margin-bottom: 14px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: rgba(57, 211, 83, 0.12);
+      border: 1px solid rgba(57, 211, 83, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.2px;
+    }
+
+    .brand-sub {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .user-pill {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent-bright);
+      background: rgba(57, 211, 83, 0.1);
+      border: 1px solid rgba(57, 211, 83, 0.3);
+      padding: 5px 10px;
+      border-radius: 999px;
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Tabs */
+    .tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 4px;
+      border-radius: 12px;
+      margin-bottom: 14px;
+    }
+
+    .tab-btn {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 13px;
+      padding: 10px;
+      border-radius: 9px;
+      cursor: pointer;
+      transition: all 0.18s ease;
+    }
+
+    .tab-btn.active {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 2px 10px rgba(46, 160, 67, 0.3);
+    }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .muted { color: var(--muted); font-size: 12px; }
+
+    /* Form Controls */
+    .segmented {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .seg-card {
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      border-radius: 11px;
+      padding: 11px 10px;
+      cursor: pointer;
+      text-align: left;
+      color: var(--text);
+      transition: all 0.15s ease;
+    }
+
+    .seg-card.active {
+      border-color: var(--accent-bright);
+      background: rgba(46, 160, 67, 0.12);
+      box-shadow: 0 0 0 1px rgba(57, 211, 83, 0.25);
+    }
+
+    .seg-title {
+      font-weight: 700;
+      font-size: 13px;
+      display: block;
+      margin-bottom: 2px;
+    }
+
+    .seg-desc {
+      font-size: 11px;
+      color: var(--muted);
+      display: block;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    input[type="text"], select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    input[type="text"]:focus, select:focus {
+      border-color: var(--blue);
+    }
+
+    .btn {
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      white-space: nowrap;
+      transition: transform 0.1s ease, opacity 0.15s ease;
+    }
+
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      width: 100%;
+      padding: 12px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .btn-blue {
+      background: rgba(88, 166, 255, 0.14);
+      border-color: rgba(88, 166, 255, 0.4);
+      color: var(--blue);
+    }
+
+    .btn-danger {
+      background: rgba(248, 81, 73, 0.12);
+      border-color: rgba(248, 81, 73, 0.35);
+      color: var(--danger);
+    }
+
+    .btn-sm {
+      padding: 7px 10px;
+      font-size: 12px;
+      border-radius: 8px;
+    }
+
+    /* Repo verification badge */
+    .repo-badge {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(46, 160, 67, 0.1);
+      border: 1px solid rgba(57, 211, 83, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .repo-badge.error {
+      background: rgba(248, 81, 73, 0.1);
+      border-color: rgba(248, 81, 73, 0.4);
+      color: #ffa198;
+    }
+
+    .repo-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+      max-height: 110px;
+      overflow-y: auto;
+    }
+
+    .chip {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 5px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .chip:hover, .chip.active {
+      border-color: var(--blue);
+      color: var(--text);
+    }
+
+    /* Calendar Weekly Planner */
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .cal-day {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 4px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      background: var(--g0);
+    }
+
+    .cal-day.lvl-1 { background: var(--g1); border-color: #196c2e; }
+    .cal-day.lvl-2 { background: var(--g2); border-color: #2ea043; }
+    .cal-day.lvl-3 { background: var(--g3); border-color: #3fb950; }
+    .cal-day.lvl-4 { background: var(--g4); border-color: #7ee787; color: #051b0b; }
+
+    .cal-day.selected {
+      outline: 2px solid var(--blue);
+      outline-offset: 1px;
+      transform: translateY(-2px);
+    }
+
+    .cal-day-name {
+      font-size: 11px;
+      font-weight: 700;
+      display: block;
+      opacity: 0.9;
+    }
+
+    .cal-day-count {
+      font-size: 15px;
+      font-weight: 800;
+      display: block;
+      margin-top: 3px;
+    }
+
+    .day-editor {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 10px;
+    }
+
+    .day-editor-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .stepper {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .step-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .step-val {
+      min-width: 28px;
+      text-align: center;
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--accent-bright);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent-bright);
+      margin: 6px 0 8px;
+    }
+
+    .quick-nums {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .qnum {
+      padding: 4px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .qnum.active {
+      border-color: var(--accent-bright);
+      color: var(--accent-bright);
+      background: rgba(57, 211, 83, 0.1);
+    }
+
+    /* 4-Week Graph Preview */
+    .graph-preview {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+
+    .graph-rows {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .g-cell {
+      height: 10px;
+      border-radius: 3px;
+      background: var(--g0);
+      border: 1px solid rgba(255,255,255,0.04);
+    }
+    .g-cell.lvl-1 { background: var(--g1); }
+    .g-cell.lvl-2 { background: var(--g2); }
+    .g-cell.lvl-3 { background: var(--g3); }
+    .g-cell.lvl-4 { background: var(--g4); }
+
+    /* Schedule list cards */
+    .sched-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .sched-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .sched-repo {
+      font-weight: 700;
+      font-size: 14px;
+      word-break: break-all;
+    }
+
+    .badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+    }
+
+    .badge-active {
+      background: rgba(57, 211, 83, 0.14);
+      color: var(--accent-bright);
+      border: 1px solid rgba(57, 211, 83, 0.35);
+    }
+
+    .badge-paused {
+      background: rgba(210, 153, 34, 0.14);
+      color: var(--warn);
+      border: 1px solid rgba(210, 153, 34, 0.35);
+    }
+
+    .mini-week {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 4px;
+      margin: 10px 0;
+    }
+
+    .mini-day {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 5px 2px;
+      text-align: center;
+      font-size: 10px;
+    }
+
+    .mini-day b {
+      display: block;
+      font-size: 12px;
+      color: var(--accent-bright);
+    }
+
+    .sched-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 10px;
+    }
+
+    /* Modal */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.72);
+      display: none;
+      align-items: flex-end;
+      justify-content: center;
+      z-index: 100;
+      padding: 10px;
+    }
+
+    .modal-backdrop.open { display: flex; }
+
+    .modal-sheet {
+      width: 100%;
+      max-width: 540px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1f242c;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 16px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      z-index: 200;
+      display: none;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    }
+
+    .hidden { display: none !important; }
+
+    details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="brand">
+        <div class="brand-icon">🐙</div>
+        <div>
+          <h1>GitHub Guardian</h1>
+          <div class="brand-sub">Commit Scheduler Mini App</div>
+        </div>
+      </div>
+      <div id="userPill" class="user-pill">Loading...</div>
+    </div>
+
+    <!-- Not Connected View -->
+    <div id="notConnectedView" class="card hidden" style="text-align:center; padding: 24px 16px;">
+      <div style="font-size: 34px; margin-bottom: 8px;">🔐</div>
+      <h2 style="margin: 0 0 6px; font-size: 16px;">Connect Your GitHub Account</h2>
+      <p class="muted" style="margin: 0 0 16px;">Link your GitHub account via OAuth to create and manage automated commit schedules.</p>
+      <a id="oauthBtn" href="#" class="btn btn-primary" style="text-decoration:none;">🔗 Connect GitHub OAuth</a>
+    </div>
+
+    <!-- Main App View -->
+    <div id="mainView" class="hidden">
+      <div class="tabs">
+        <button class="tab-btn active" id="tabSchedules" onclick="switchTab('schedules')">⏰ My Schedules</button>
+        <button class="tab-btn" id="tabCreate" onclick="switchTab('create')">➕ New Schedule</button>
+      </div>
+
+      <!-- TAB 1: My Schedules -->
+      <div id="panelSchedules">
+        <div id="schedulesList"></div>
+      </div>
+
+      <!-- TAB 2: Create New Schedule -->
+      <div id="panelCreate" class="hidden">
+        <!-- Step 1: Repository -->
+        <div class="card">
+          <div class="card-title">
+            <span>1. Target Repository</span>
+            <span class="muted">Existing or New</span>
+          </div>
+
+          <div class="segmented">
+            <button type="button" class="seg-card active" id="btnRepoExisting" onclick="setRepoMode('existing')">
+              <span class="seg-title">📦 Use Existing Repo</span>
+              <span class="seg-desc">Fetch a repo from GitHub</span>
+            </button>
+            <button type="button" class="seg-card" id="btnRepoCreate" onclick="setRepoMode('create')">
+              <span class="seg-title">✨ Create New Repo</span>
+              <span class="seg-desc">Public or Private repo</span>
+            </button>
+          </div>
+
+          <!-- Existing Repo Box -->
+          <div id="existingRepoBox">
+            <div class="input-row">
+              <input type="text" id="existingRepoInput" placeholder="Enter repo name (e.g. my-repo or user/repo)" />
+              <button type="button" class="btn btn-blue" id="fetchRepoBtn" onclick="fetchExistingRepo()">Fetch</button>
+            </div>
+            <div id="repoQuickChips" class="repo-chips"></div>
+            <div id="repoCheckResult" class="hidden"></div>
+          </div>
+
+          <!-- Create New Repo Box -->
+          <div id="createRepoBox" class="hidden">
+            <input type="text" id="newRepoInput" placeholder="New repository name (e.g. github-streak)" style="margin-bottom: 10px;" />
+            <div class="segmented" style="margin-bottom: 0;">
+              <button type="button" class="seg-card active" id="visPublic" onclick="setVisibility(false)">
+                <span class="seg-title">🌐 Public</span>
+                <span class="seg-desc">Visible on profile</span>
+              </button>
+              <button type="button" class="seg-card" id="visPrivate" onclick="setVisibility(true)">
+                <span class="seg-title">🔒 Private</span>
+                <span class="seg-desc">Only visible to you</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Schedule Mode (2 Options Only) -->
+        <div class="card">
+          <div class="card-title">
+            <span>2. Schedule Mode</span>
+            <span class="muted">Switchable anytime</span>
+          </div>
+
+          <div class="segmented">
+            <button type="button" class="seg-card active" id="modeWeekly" onclick="setCreateMode('weekly_planner')">
+              <span class="seg-title">📆 Weekly Schedule</span>
+              <span class="seg-desc">Repeats every week</span>
+            </button>
+            <button type="button" class="seg-card" id="modeDeepGreen" onclick="setCreateMode('deep_green')">
+              <span class="seg-title">🟢 Deep Green Mode</span>
+              <span class="seg-desc">24 commits / day (hourly)</span>
+            </button>
+          </div>
+
+          <!-- Weekly Calendar Planner UI -->
+          <div id="createCalendarBox">
+            <div class="card-title" style="margin-top:4px;">
+              <span>📅 Weekly Calendar Plan</span>
+              <span id="createTotalWeek" class="muted">26 commits / week</span>
+            </div>
+
+            <div class="quick-nums" style="margin-bottom: 10px;">
+              <span class="qnum" onclick="applyPreset('create', 'light')">Light (14/wk)</span>
+              <span class="qnum" onclick="applyPreset('create', 'balanced')">Balanced (35/wk)</span>
+              <span class="qnum" onclick="applyPreset('create', 'weekdays')">Weekdays Only</span>
+              <span class="qnum" onclick="applyPreset('create', 'pro')">Pro (55/wk)</span>
+            </div>
+
+            <div id="createCalGrid" class="calendar-grid"></div>
+            <div id="createDayEditor" class="day-editor"></div>
+
+            <div class="graph-preview">
+              <div class="muted" style="display:flex; justify-content:space-between;">
+                <span>4-Week Recurring Preview</span>
+                <span>Less ▫ ▪ ▪ ▪ More</span>
+              </div>
+              <div id="createGraphPreview" class="graph-rows"></div>
+            </div>
+          </div>
+
+          <!-- Deep Green Info Box -->
+          <div id="createDeepGreenBox" class="hidden" style="background: rgba(57, 211, 83, 0.08); border: 1px solid rgba(57, 211, 83, 0.3); border-radius: 10px; padding: 12px;">
+            <div style="font-weight:700; color: var(--accent-bright); margin-bottom:4px;">🟢 Deep Green Mode Active</div>
+            <div class="muted">Pushes <b>1 commit every 60 minutes</b> (24 commits every day) automatically to keep your contribution graph solid dark green.</div>
+          </div>
+        </div>
+
+        <!-- Optional Advanced Settings -->
+        <div class="card">
+          <details>
+            <summary>⚙️ Advanced Options (File Path, Message, Timezone)</summary>
+            <div style="display:flex; flex-direction:column; gap:10px; margin-top:8px;">
+              <div>
+                <div class="muted" style="margin-bottom:4px;">Target File Path</div>
+                <input type="text" id="filePathInput" value="ACTIVITY.md" />
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:4px;">Commit Message</div>
+                <input type="text" id="commitMsgInput" value="Update activity log" />
+              </div>
+              <div>
+                <div class="muted" style="margin-bottom:4px;">Timezone</div>
+                <input type="text" id="timezoneInput" value="Asia/Kolkata" />
+              </div>
+            </div>
+          </details>
+          <button type="button" class="btn btn-primary" id="createSubmitBtn" onclick="submitNewSchedule()">🚀 Create & Start Schedule</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Weekly Schedule Modal -->
+  <div id="editModal" class="modal-backdrop">
+    <div class="modal-sheet">
+      <div class="card-title">
+        <span id="editModalTitle">📆 Edit Weekly Schedule</span>
+        <button type="button" class="btn btn-sm" onclick="closeEditModal()">✕</button>
+      </div>
+      <div class="muted" id="editModalRepo" style="margin-bottom: 10px;"></div>
+
+      <div class="segmented">
+        <button type="button" class="seg-card" id="editModeWeekly" onclick="setEditMode('weekly_planner')">
+          <span class="seg-title">📆 Weekly Schedule</span>
+          <span class="seg-desc">Custom Mon–Sun plan</span>
+        </button>
+        <button type="button" class="seg-card" id="editModeDeep" onclick="setEditMode('deep_green')">
+          <span class="seg-title">🟢 Deep Green</span>
+          <span class="seg-desc">24 commits / day</span>
+        </button>
+      </div>
+
+      <div id="editCalendarBox">
+        <div class="card-title">
+          <span>Tap a day to adjust commits</span>
+          <span id="editTotalWeek" class="muted"></span>
+        </div>
+        <div class="quick-nums" style="margin-bottom: 10px;">
+          <span class="qnum" onclick="applyPreset('edit', 'light')">Light (14/wk)</span>
+          <span class="qnum" onclick="applyPreset('edit', 'balanced')">Balanced (35/wk)</span>
+          <span class="qnum" onclick="applyPreset('edit', 'weekdays')">Weekdays Only</span>
+          <span class="qnum" onclick="applyPreset('edit', 'pro')">Pro (55/wk)</span>
+        </div>
+        <div id="editCalGrid" class="calendar-grid"></div>
+        <div id="editDayEditor" class="day-editor"></div>
+      </div>
+
+      <div id="editDeepBox" class="hidden" style="background: rgba(57, 211, 83, 0.08); border: 1px solid rgba(57, 211, 83, 0.3); border-radius: 10px; padding: 12px; margin-bottom: 12px;">
+        <div style="font-weight:700; color: var(--accent-bright); margin-bottom:4px;">🟢 Deep Green Mode</div>
+        <div class="muted">Runs 24 commits/day (every 60 minutes). Your weekly calendar plan is preserved if you switch back later.</div>
+      </div>
+
+      <button type="button" class="btn btn-primary" id="saveEditBtn" onclick="saveScheduleEdit()">💾 Save Changes</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
+
+    const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const DAY_FULL = {
+      Mon: "Monday", Tue: "Tuesday", Wed: "Wednesday",
+      Thu: "Thursday", Fri: "Friday", Sat: "Saturday", Sun: "Sunday"
+    };
+
+    const state = {
+      initData: tg?.initData || "",
+      user: null,
+      schedules: [],
+      reposLoaded: false,
+      repoMode: "existing",
+      isPrivate: false,
+      verifiedRepo: null,
+      createMode: "weekly_planner",
+      createPlan: { Mon: 3, Tue: 5, Wed: 5, Thu: 4, Fri: 6, Sat: 2, Sun: 1 },
+      createSelectedDay: "Mon",
+      editScheduleId: null,
+      editMode: "weekly_planner",
+      editPlan: { Mon: 3, Tue: 5, Wed: 5, Thu: 4, Fri: 6, Sat: 2, Sun: 1 },
+      editSelectedDay: "Mon",
+    };
+
+    function showToast(msg) {
+      const el = document.getElementById("toast");
+      el.textContent = msg;
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 2800);
+    }
+
+    function haptic(type = "light") {
+      try { tg?.HapticFeedback?.impactOccurred(type); } catch {}
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Telegram-Init-Data": state.initData,
+          ...(options.headers || {})
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || "Request failed");
+      }
+      return data;
+    }
+
+    function getLevelClass(count) {
+      if (count <= 0) return "";
+      if (count <= 2) return "lvl-1";
+      if (count <= 5) return "lvl-2";
+      if (count <= 10) return "lvl-3";
+      return "lvl-4";
+    }
+
+    function switchTab(tab) {
+      haptic("light");
+      document.getElementById("tabSchedules").classList.toggle("active", tab === "schedules");
+      document.getElementById("tabCreate").classList.toggle("active", tab === "create");
+      document.getElementById("panelSchedules").classList.toggle("hidden", tab !== "schedules");
+      document.getElementById("panelCreate").classList.toggle("hidden", tab !== "create");
+      if (tab === "create" && !state.reposLoaded) {
+        loadQuickRepos();
+      }
+    }
+
+    function setRepoMode(mode) {
+      haptic("light");
+      state.repoMode = mode;
+      document.getElementById("btnRepoExisting").classList.toggle("active", mode === "existing");
+      document.getElementById("btnRepoCreate").classList.toggle("active", mode === "create");
+      document.getElementById("existingRepoBox").classList.toggle("hidden", mode !== "existing");
+      document.getElementById("createRepoBox").classList.toggle("hidden", mode !== "create");
+    }
+
+    function setVisibility(priv) {
+      haptic("light");
+      state.isPrivate = priv;
+      document.getElementById("visPublic").classList.toggle("active", !priv);
+      document.getElementById("visPrivate").classList.toggle("active", priv);
+    }
+
+    function setCreateMode(mode) {
+      haptic("light");
+      state.createMode = mode;
+      document.getElementById("modeWeekly").classList.toggle("active", mode === "weekly_planner");
+      document.getElementById("modeDeepGreen").classList.toggle("active", mode === "deep_green");
+      document.getElementById("createCalendarBox").classList.toggle("hidden", mode !== "weekly_planner");
+      document.getElementById("createDeepGreenBox").classList.toggle("hidden", mode !== "deep_green");
+    }
+
+    function renderCalendar(prefix) {
+      const plan = prefix === "create" ? state.createPlan : state.editPlan;
+      const selectedDay = prefix === "create" ? state.createSelectedDay : state.editSelectedDay;
+      const gridEl = document.getElementById(prefix + "CalGrid");
+      const editorEl = document.getElementById(prefix + "DayEditor");
+      const totalEl = document.getElementById(prefix + "TotalWeek");
+
+      const total = DAYS.reduce((acc, d) => acc + (plan[d] || 0), 0);
+      totalEl.textContent = `${total} commits / week`;
+
+      gridEl.innerHTML = DAYS.map(d => {
+        const c = plan[d] || 0;
+        const lvl = getLevelClass(c);
+        const sel = d === selectedDay ? "selected" : "";
+        return `
+          <div class="cal-day ${lvl} ${sel}" onclick="selectDay('${prefix}', '${d}')">
+            <span class="cal-day-name">${d}</span>
+            <span class="cal-day-count">${c}</span>
+          </div>
+        `;
+      }).join("");
+
+      const curVal = plan[selectedDay] || 0;
+      const quickVals = [0, 1, 3, 5, 10, 15, 24];
+      editorEl.innerHTML = `
+        <div class="day-editor-top">
+          <div>
+            <div style="font-weight:700; font-size:14px;">${DAY_FULL[selectedDay]}</div>
+            <div class="muted">Commits scheduled every ${selectedDay}</div>
+          </div>
+          <div class="stepper">
+            <button type="button" class="step-btn" onclick="updateDayCount('${prefix}', ${curVal - 1})">−</button>
+            <span class="step-val">${curVal}</span>
+            <button type="button" class="step-btn" onclick="updateDayCount('${prefix}', ${curVal + 1})">+</button>
+          </div>
+        </div>
+        <input type="range" min="0" max="30" value="${Math.min(30, curVal)}" oninput="updateDayCount('${prefix}', this.value)" />
+        <div class="quick-nums">
+          ${quickVals.map(v => `<span class="qnum ${curVal === v ? 'active' : ''}" onclick="updateDayCount('${prefix}', ${v})">${v}</span>`).join("")}
+        </div>
+      `;
+
+      if (prefix === "create") {
+        const previewEl = document.getElementById("createGraphPreview");
+        let cells = "";
+        for (let w = 0; w < 4; w++) {
+          for (const d of DAYS) {
+            cells += `<div class="g-cell ${getLevelClass(plan[d] || 0)}"></div>`;
+          }
+        }
+        previewEl.innerHTML = cells;
+      }
+    }
+
+    function selectDay(prefix, day) {
+      haptic("light");
+      if (prefix === "create") state.createSelectedDay = day;
+      else state.editSelectedDay = day;
+      renderCalendar(prefix);
+    }
+
+    function updateDayCount(prefix, val) {
+      const clamped = Math.max(0, Math.min(50, parseInt(val || 0, 10)));
+      if (prefix === "create") state.createPlan[state.createSelectedDay] = clamped;
+      else state.editPlan[state.editSelectedDay] = clamped;
+      renderCalendar(prefix);
+    }
+
+    function applyPreset(prefix, preset) {
+      haptic("medium");
+      const presets = {
+        light: { Mon: 2, Tue: 2, Wed: 2, Thu: 2, Fri: 2, Sat: 2, Sun: 2 },
+        balanced: { Mon: 5, Tue: 5, Wed: 5, Thu: 5, Fri: 5, Sat: 5, Sun: 5 },
+        weekdays: { Mon: 5, Tue: 6, Wed: 6, Thu: 5, Fri: 6, Sat: 0, Sun: 0 },
+        pro: { Mon: 8, Tue: 10, Wed: 10, Thu: 8, Fri: 10, Sat: 5, Sun: 4 },
+      };
+      const copy = { ...presets[preset] };
+      if (prefix === "create") state.createPlan = copy;
+      else state.editPlan = copy;
+      renderCalendar(prefix);
+    }
+
+    async function loadQuickRepos() {
+      try {
+        const data = await api("/api/miniapp/repos");
+        state.reposLoaded = true;
+        const box = document.getElementById("repoQuickChips");
+        box.innerHTML = (data.repos || []).slice(0, 12).map(r => `
+          <span class="chip" onclick="pickExistingRepo('${r.full_name}')">${r.private ? "🔒" : "🌐"} ${r.name}</span>
+        `).join("");
+      } catch {}
+    }
+
+    function pickExistingRepo(fullName) {
+      document.getElementById("existingRepoInput").value = fullName;
+      fetchExistingRepo();
+    }
+
+    async function fetchExistingRepo() {
+      const input = document.getElementById("existingRepoInput").value.trim();
+      const box = document.getElementById("repoCheckResult");
+      if (!input) {
+        showToast("Enter a repository name first");
+        return;
+      }
+      const btn = document.getElementById("fetchRepoBtn");
+      btn.disabled = true;
+      btn.textContent = "...";
+      try {
+        const repo = await api(`/api/miniapp/repo/check?name=${encodeURIComponent(input)}`);
+        state.verifiedRepo = repo.full_name;
+        box.className = "repo-badge";
+        box.innerHTML = `
+          <div>
+            <div style="font-weight:700; color: var(--accent-bright);">✅ ${repo.full_name}</div>
+            <div class="muted">${repo.private ? "🔒 Private" : "🌐 Public"} • Branch: ${repo.default_branch}</div>
+          </div>
+          <span class="badge badge-active">Ready</span>
+        `;
+        haptic("medium");
+      } catch (err) {
+        state.verifiedRepo = null;
+        box.className = "repo-badge error";
+        box.innerHTML = `<div>❌ ${err.message}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Fetch";
+      }
+    }
+
+    async function submitNewSchedule() {
+      let repoName = "";
+      if (state.repoMode === "existing") {
+        repoName = state.verifiedRepo || document.getElementById("existingRepoInput").value.trim();
+        if (!repoName) {
+          showToast("Enter or fetch an existing repository");
+          return;
+        }
+      } else {
+        repoName = document.getElementById("newRepoInput").value.trim();
+        if (!repoName) {
+          showToast("Enter a name for the new repository");
+          return;
+        }
+      }
+
+      const btn = document.getElementById("createSubmitBtn");
+      btn.disabled = true;
+      btn.textContent = "⏳ Creating Schedule...";
+
+      try {
+        await api("/api/miniapp/schedules", {
+          method: "POST",
+          body: JSON.stringify({
+            repo_mode: state.repoMode,
+            repo_name: repoName,
+            is_private: state.isPrivate,
+            file_path: document.getElementById("filePathInput").value.trim() || "ACTIVITY.md",
+            commit_message: document.getElementById("commitMsgInput").value.trim() || "Update activity log",
+            schedule_type: state.createMode,
+            weekly_plan: state.createMode === "weekly_planner" ? state.createPlan : null,
+            timezone: document.getElementById("timezoneInput").value.trim() || "Asia/Kolkata"
+          })
+        });
+        haptic("heavy");
+        showToast("🎉 Schedule created & started!");
+        await loadMe();
+        switchTab("schedules");
+      } catch (err) {
+        showToast("❌ " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "🚀 Create & Start Schedule";
+      }
+    }
+
+    function renderSchedules() {
+      const container = document.getElementById("schedulesList");
+      if (!state.schedules.length) {
+        container.innerHTML = `
+          <div class="card" style="text-align:center; padding: 26px 16px;">
+            <div style="font-size: 32px; margin-bottom: 8px;">⏰</div>
+            <div style="font-weight:700; margin-bottom: 4px;">No Schedules Yet</div>
+            <div class="muted" style="margin-bottom: 14px;">Create a Weekly Schedule or Deep Green Mode schedule to start automating commits.</div>
+            <button class="btn btn-primary" onclick="switchTab('create')">➕ Create First Schedule</button>
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = state.schedules.map(s => {
+        const isActive = s.status === "active";
+        const isDeep = s.schedule_type === "deep_green";
+        const plan = s.weekly_plan || { Mon: 3, Tue: 5, Wed: 5, Thu: 4, Fri: 6, Sat: 2, Sun: 1 };
+        const totalWeek = DAYS.reduce((a, d) => a + (plan[d] || 0), 0);
+
+        const modeHtml = isDeep
+          ? `<div style="margin:8px 0; padding:8px 10px; border-radius:9px; background:rgba(57,211,83,0.08); border:1px solid rgba(57,211,83,0.25); font-size:12px;">
+               🟢 <b>Deep Green Mode</b> • 24 commits/day (every 60 mins)
+             </div>`
+          : `<div style="margin-top:8px; font-size:12px; color:var(--muted);">
+               📆 <b>Weekly Schedule</b> (${totalWeek} commits/week)
+             </div>
+             <div class="mini-week">
+               ${DAYS.map(d => `<div class="mini-day">${d}<b>${plan[d] || 0}</b></div>`).join("")}
+             </div>`;
+
+        return `
+          <div class="sched-card">
+            <div class="sched-header">
+              <div>
+                <div class="sched-repo">📦 ${s.repo}</div>
+                <div class="muted">📄 ${s.file_path || "ACTIVITY.md"} • Total pushed: ${s.total_executions || 0}</div>
+              </div>
+              <span class="badge ${isActive ? "badge-active" : "badge-paused"}">${isActive ? "● Active" : "⏸ Paused"}</span>
+            </div>
+            ${modeHtml}
+            <div class="sched-actions">
+              <button class="btn btn-sm btn-blue" onclick="openEditModal('${s.schedule_id}')">
+                ${isDeep ? "🔄 Switch / Edit" : "📅 Edit Week / Switch Mode"}
+              </button>
+              <button class="btn btn-sm" onclick="quickSwitchMode('${s.schedule_id}', '${isDeep ? "weekly_planner" : "deep_green"}')">
+                ${isDeep ? "📆 To Weekly" : "🟢 To Deep Green"}
+              </button>
+              <button class="btn btn-sm" onclick="toggleStatus('${s.schedule_id}', '${isActive ? "paused" : "active"}')">
+                ${isActive ? "⏸ Pause" : "▶ Resume"}
+              </button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSched('${s.schedule_id}')">🗑</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    async function quickSwitchMode(scheduleId, targetMode) {
+      haptic("medium");
+      try {
+        await api(`/api/miniapp/schedules/${scheduleId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ schedule_type: targetMode })
+        });
+        showToast(targetMode === "deep_green" ? "🟢 Switched to Deep Green Mode!" : "📆 Switched to Weekly Schedule!");
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    async function toggleStatus(scheduleId, newStatus) {
+      haptic("light");
+      try {
+        await api(`/api/miniapp/schedules/${scheduleId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: newStatus })
+        });
+        showToast(newStatus === "active" ? "▶ Schedule resumed" : "⏸ Schedule paused");
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    async function deleteSched(scheduleId) {
+      if (!confirm("Delete this commit schedule?")) return;
+      haptic("heavy");
+      try {
+        await api(`/api/miniapp/schedules/${scheduleId}`, { method: "DELETE" });
+        showToast("🗑 Schedule deleted");
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      }
+    }
+
+    function openEditModal(scheduleId) {
+      const sched = state.schedules.find(s => s.schedule_id === scheduleId);
+      if (!sched) return;
+      state.editScheduleId = scheduleId;
+      state.editMode = sched.schedule_type === "deep_green" ? "deep_green" : "weekly_planner";
+      state.editPlan = { ...(sched.weekly_plan || { Mon: 3, Tue: 5, Wed: 5, Thu: 4, Fri: 6, Sat: 2, Sun: 1 }) };
+      state.editSelectedDay = "Mon";
+
+      document.getElementById("editModalRepo").textContent = `📦 ${sched.repo}`;
+      setEditMode(state.editMode);
+      renderCalendar("edit");
+      document.getElementById("editModal").classList.add("open");
+    }
+
+    function closeEditModal() {
+      document.getElementById("editModal").classList.remove("open");
+    }
+
+    function setEditMode(mode) {
+      state.editMode = mode;
+      document.getElementById("editModeWeekly").classList.toggle("active", mode === "weekly_planner");
+      document.getElementById("editModeDeep").classList.toggle("active", mode === "deep_green");
+      document.getElementById("editCalendarBox").classList.toggle("hidden", mode !== "weekly_planner");
+      document.getElementById("editDeepBox").classList.toggle("hidden", mode !== "deep_green");
+    }
+
+    async function saveScheduleEdit() {
+      const btn = document.getElementById("saveEditBtn");
+      btn.disabled = true;
+      btn.textContent = "⏳ Saving...";
+      try {
+        await api(`/api/miniapp/schedules/${state.editScheduleId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            schedule_type: state.editMode,
+            weekly_plan: state.editPlan
+          })
+        });
+        haptic("medium");
+        showToast("✅ Schedule updated!");
+        closeEditModal();
+        await loadMe();
+      } catch (err) {
+        showToast("❌ " + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "💾 Save Changes";
+      }
+    }
+
+    async function loadMe() {
+      try {
+        const data = await api("/api/miniapp/me");
+        state.user = data;
+        if (!data.connected) {
+          document.getElementById("userPill").textContent = "Not Connected";
+          document.getElementById("oauthBtn").href = data.oauth_url || "#";
+          document.getElementById("notConnectedView").classList.remove("hidden");
+          document.getElementById("mainView").classList.add("hidden");
+          return;
+        }
+        document.getElementById("userPill").textContent = `@${data.github_username}`;
+        document.getElementById("timezoneInput").value = data.timezone || "Asia/Kolkata";
+        document.getElementById("notConnectedView").classList.add("hidden");
+        document.getElementById("mainView").classList.remove("hidden");
+        state.schedules = data.schedules || [];
+        renderSchedules();
+      } catch (err) {
+        document.getElementById("userPill").textContent = "Open in Telegram";
+        showToast("Please open this Mini App inside Telegram.");
+      }
+    }
+
+    renderCalendar("create");
+    loadMe();
+  </script>
+</body>
+</html>
+

@@ -66,6 +66,13 @@ async def execute_scheduled_commit(schedule_id: str):
 
     day_name = datetime.now(loc_tz).strftime("%a")
     multi_plan = sched.get("multi_repo_plan")
+
+    # Respect weekly_planner 0-commit days
+    if sched.get("schedule_type") == "weekly_planner" and isinstance(sched.get("weekly_plan"), dict):
+        target_for_today = sched["weekly_plan"].get(day_name, 0)
+        if target_for_today <= 0:
+            logger.info(f"Schedule {schedule_id} has 0 commits configured for {day_name}. Skipping.")
+            return
     
     target_repo_full = sched["repo"]
     if isinstance(multi_plan, dict) and day_name in multi_plan:
@@ -214,13 +221,13 @@ async def add_job_to_scheduler(sched: Dict[str, Any]):
         tz = pytz.timezone("Asia/Kolkata")
 
     if stype == "weekly_planner" and isinstance(weekly_plan, dict):
-        # Calculate today's interval dynamically
+        # Calculate today's interval dynamically (keep 60m check even on 0-commit days so tomorrow runs automatically)
         day_name = datetime.now(tz).strftime("%a")
         target_today = weekly_plan.get(day_name, 5)
         if target_today > 0:
             interval_mins = max(1, int((24 * 60) / target_today))
         else:
-            interval_mins = None
+            interval_mins = 60
 
     if interval_mins:
         from apscheduler.triggers.interval import IntervalTrigger
@@ -334,3 +341,51 @@ async def remove_commit_schedule(schedule_id: str, telegram_id: int) -> bool:
     if scheduler.get_job(schedule_id):
         scheduler.remove_job(schedule_id)
     return await delete_schedule(schedule_id, telegram_id)
+
+async def update_commit_schedule(
+    schedule_id: str,
+    telegram_id: int,
+    schedule_type: Optional[str] = None,
+    weekly_plan: Optional[Dict[str, int]] = None,
+    status: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Updates schedule mode (weekly_planner <-> deep_green), weekly plan, or status and reschedules."""
+    db = MongoDB.get_db()
+    sched = await db.schedules.find_one({"schedule_id": schedule_id, "telegram_id": telegram_id})
+    if not sched:
+        return None
+
+    updates: Dict[str, Any] = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    new_type = schedule_type or sched.get("schedule_type", "weekly_planner")
+    updates["schedule_type"] = new_type
+
+    if new_type == "deep_green":
+        updates["interval_minutes"] = 60
+        updates["commits_per_day"] = 24
+        if weekly_plan is not None:
+            updates["weekly_plan"] = weekly_plan
+    elif new_type == "weekly_planner":
+        plan = weekly_plan if weekly_plan is not None else (
+            sched.get("weekly_plan") or {"Mon": 3, "Tue": 5, "Wed": 5, "Thu": 4, "Fri": 6, "Sat": 2, "Sun": 1}
+        )
+        updates["weekly_plan"] = plan
+        updates["commits_per_day"] = None
+        updates["interval_minutes"] = 60
+
+    if status in ("active", "paused"):
+        updates["status"] = status
+
+    await db.schedules.update_one(
+        {"schedule_id": schedule_id, "telegram_id": telegram_id},
+        {"$set": updates}
+    )
+
+    updated_sched = await db.schedules.find_one({"schedule_id": schedule_id, "telegram_id": telegram_id})
+    if updated_sched:
+        if updated_sched.get("status") == "active":
+            await add_job_to_scheduler(updated_sched)
+        else:
+            scheduler = get_scheduler()
+            if scheduler.get_job(schedule_id):
+                scheduler.pause_job(schedule_id)
+    return updated_sched

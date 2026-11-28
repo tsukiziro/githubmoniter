@@ -1,5 +1,12 @@
+import os
 from typing import List, Dict, Any, Optional
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+def _get_miniapp_url() -> Optional[str]:
+    base = (os.getenv("APP_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
+    if base.startswith("https://"):
+        return f"{base}/app"
+    return None
 
 def auth_keyboard(oauth_url: str) -> InlineKeyboardMarkup:
     """Authentication options keyboard."""
@@ -10,8 +17,14 @@ def auth_keyboard(oauth_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def main_dashboard_keyboard(notifications_on: bool = True) -> InlineKeyboardMarkup:
-    """Main dashboard keyboard featuring Commit Scheduler and Free Achievements."""
-    keyboard = [
+    """Main dashboard keyboard featuring Commit Scheduler, Mini App, and Free Achievements."""
+    keyboard = []
+    miniapp_url = _get_miniapp_url()
+    if miniapp_url:
+        keyboard.append([
+            InlineKeyboardButton("🚀 Open Scheduler Mini App", web_app=WebAppInfo(url=miniapp_url))
+        ])
+    keyboard.extend([
         [
             InlineKeyboardButton("⏰ Commit Scheduler", callback_data="nav_scheduler"),
             InlineKeyboardButton("🏆 Free Achievements", callback_data="nav_achievements")
@@ -20,12 +33,17 @@ def main_dashboard_keyboard(notifications_on: bool = True) -> InlineKeyboardMark
             InlineKeyboardButton("⚙️ Settings", callback_data="nav_settings"),
             InlineKeyboardButton("📖 User Guide", callback_data="nav_guide")
         ]
-    ]
+    ])
     return InlineKeyboardMarkup(keyboard)
 
 def scheduler_menu_keyboard(schedules: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
     """List of scheduled jobs and actions."""
     keyboard = []
+    miniapp_url = _get_miniapp_url()
+    if miniapp_url:
+        keyboard.append([
+            InlineKeyboardButton("🚀 Open Scheduler Mini App", web_app=WebAppInfo(url=miniapp_url))
+        ])
     for sched in schedules:
         s_id = sched["schedule_id"]
         repo = sched["repo"]

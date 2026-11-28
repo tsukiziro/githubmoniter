@@ -5,10 +5,12 @@ from bot.services.auth_service import verify_state, exchange_code_for_token, com
 from bot.services.monitoring_service import process_github_webhook_event
 from bot.keyboards.inline import main_dashboard_keyboard
 from bot.database.mongodb import get_user
+from api.miniapp import router as miniapp_router
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="GitHub Guardian OAuth & Webhook API")
+app.include_router(miniapp_router)
 
 @app.get("/")
 async def health_check():

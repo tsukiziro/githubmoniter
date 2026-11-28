@@ -1,7 +1,7 @@
 import os
 import logging
 from typing import Optional
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, MenuButtonWebApp, WebAppInfo
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -66,6 +66,19 @@ async def post_init(app: Application):
         logger.info("Telegram Bot commands menu registered successfully.")
     except Exception as e:
         logger.warning(f"Failed to set bot commands menu: {e}")
+
+    app_base = (os.getenv("APP_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
+    if app_base.startswith("https://"):
+        try:
+            await app.bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(
+                    text="Scheduler",
+                    web_app=WebAppInfo(url=f"{app_base}/app")
+                )
+            )
+            logger.info(f"Telegram Mini App menu button registered: {app_base}/app")
+        except Exception as e:
+            logger.warning(f"Failed to set Mini App menu button: {e}")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Global exception handler for Telegram bot errors."""
