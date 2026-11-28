@@ -37,6 +37,7 @@ class MongoDB:
             
             # Schedules indices
             await db.schedules.create_index([("telegram_id", 1), ("schedule_id", 1)])
+            await db.schedules.create_index("github_username")
             
             # Monitoring settings index
             await db.monitoring_settings.create_index("telegram_id", unique=True)
@@ -210,6 +211,61 @@ async def remove_github_account(telegram_id: int, github_username: str) -> Dict[
     await db.users.update_one({"telegram_id": telegram_id}, {"$set": updates})
     updated_user = await db.users.find_one({"telegram_id": telegram_id})
     return {"remaining": len(remaining), "user": updated_user}
+
+
+async def migrate_github_account_to_telegram(
+    new_telegram_id: int,
+    github_id: int,
+    github_username: str,
+) -> int:
+    """
+    If this GitHub account was previously linked to a different (e.g. banned) Telegram ID,
+    migrates all of its schedules to new_telegram_id and removes the GitHub account from the old Telegram ID.
+    Returns number of migrated schedules.
+    """
+    import re
+    db = MongoDB.get_db()
+    uname_regex = f"^{re.escape(github_username)}$"
+    repo_prefix_regex = f"^{re.escape(github_username)}/"
+
+    # 1. Re-assign schedules owned by this GitHub username from any old telegram_id to new_telegram_id
+    sched_res = await db.schedules.update_many(
+        {
+            "telegram_id": {"$ne": new_telegram_id},
+            "$or": [
+                {"github_username": {"$regex": uname_regex, "$options": "i"}},
+                {"repo": {"$regex": repo_prefix_regex, "$options": "i"}},
+            ],
+        },
+        {
+            "$set": {
+                "telegram_id": new_telegram_id,
+                "github_username": github_username,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    )
+    migrated_count = int(sched_res.modified_count or 0)
+
+    # 2. Remove this GitHub account from any old Telegram user documents
+    old_users_cursor = db.users.find({
+        "telegram_id": {"$ne": new_telegram_id},
+        "$or": [
+            {"github_id": github_id},
+            {"github_username": {"$regex": uname_regex, "$options": "i"}},
+            {"accounts.github_id": github_id},
+            {"accounts.github_username": {"$regex": uname_regex, "$options": "i"}},
+        ],
+    })
+    old_users = await old_users_cursor.to_list(length=20)
+    for old_u in old_users:
+        old_tg_id = old_u.get("telegram_id")
+        if old_tg_id:
+            await remove_github_account(old_tg_id, github_username)
+
+    if migrated_count > 0:
+        logger.info(f"Migrated {migrated_count} schedules for @{github_username} to telegram_id={new_telegram_id}.")
+    return migrated_count
 
 async def get_user(telegram_id: int) -> Optional[Dict[str, Any]]:
     db = MongoDB.get_db()

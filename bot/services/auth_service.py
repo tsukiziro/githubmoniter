@@ -13,6 +13,8 @@ from bot.database.mongodb import (
     normalize_user_accounts,
     switch_active_account,
     remove_github_account,
+    migrate_github_account_to_telegram,
+    get_user_schedules,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,19 @@ async def fetch_github_profile(token: str) -> Dict[str, Any]:
             raise ValueError(f"GitHub API Error: {resp.status_code}")
         return resp.json()
 
+async def _finalize_login_migration(telegram_id: int, github_id: int, github_username: str, user_doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Migrates any existing schedules for this GitHub account from old/banned Telegram IDs and reloads scheduler."""
+    migrated = await migrate_github_account_to_telegram(telegram_id, github_id, github_username)
+    if migrated > 0:
+        from bot.services.scheduler_service import add_job_to_scheduler
+        schedules = await get_user_schedules(telegram_id)
+        for s in schedules:
+            if (s.get("github_username") or "").lower() == github_username.lower():
+                await add_job_to_scheduler(s)
+    user_doc["migrated_schedules"] = migrated
+    return user_doc
+
+
 async def complete_oauth_login(telegram_id: int, access_token: str) -> Dict[str, Any]:
     """Validates token, encrypts, and saves user session in DB."""
     profile = await fetch_github_profile(access_token)
@@ -124,7 +139,7 @@ async def complete_oauth_login(telegram_id: int, access_token: str) -> Dict[str,
         auth_method="oauth",
         avatar_url=avatar_url,
     )
-    return user_doc
+    return await _finalize_login_migration(telegram_id, github_id, github_username, user_doc)
 
 async def authenticate_with_pat(telegram_id: int, pat: str) -> Dict[str, Any]:
     """Validates PAT, encrypts, and saves user session in DB."""
@@ -142,7 +157,7 @@ async def authenticate_with_pat(telegram_id: int, pat: str) -> Dict[str, Any]:
         auth_method="pat",
         avatar_url=avatar_url,
     )
-    return user_doc
+    return await _finalize_login_migration(telegram_id, github_id, github_username, user_doc)
 
 async def get_user_decrypted_token(
     telegram_id: int,
