@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MINIAPP_HTML_PATH = Path(__file__).resolve().parent.parent / "web" / "miniapp.html"
+ADMIN_HTML_PATH = Path(__file__).resolve().parent.parent / "web" / "admin.html"
 
 
 def verify_telegram_init_data(init_data: str) -> Dict[str, Any]:
@@ -125,6 +126,14 @@ async def serve_miniapp():
     if not MINIAPP_HTML_PATH.exists():
         raise HTTPException(status_code=404, detail="Mini App UI file not found.")
     return HTMLResponse(content=MINIAPP_HTML_PATH.read_text(encoding="utf-8"))
+
+
+@router.get("/admin", response_class=HTMLResponse)
+async def serve_admin_page():
+    """Serves the standalone Admin & Sub-Admin Mini App page."""
+    if not ADMIN_HTML_PATH.exists():
+        raise HTTPException(status_code=404, detail="Admin UI file not found.")
+    return HTMLResponse(content=ADMIN_HTML_PATH.read_text(encoding="utf-8"))
 
 
 def _schedule_belongs_to(sched: Dict[str, Any], github_username: str) -> bool:
@@ -747,9 +756,10 @@ async def miniapp_demote_subadmin(
 @router.delete("/api/miniapp/admin/users/{target_id}")
 async def miniapp_admin_remove_user(
     target_id: int,
+    github_username: Optional[str] = Query(None),
     x_telegram_init_data: str = Header(None, alias="X-Telegram-Init-Data"),
 ):
-    """Admin or Sub-Admin: removes a user & stops their schedules. Sub-Admins cannot remove Admins/Sub-Admins."""
+    """Admin or Sub-Admin: removes a specific GitHub account (or whole user). Sub-Admins cannot remove Admins/Sub-Admins."""
     caller_id, caller_role = await _require_admin_or_subadmin(x_telegram_init_data)
     target_role = await get_admin_role(target_id)
 
@@ -763,11 +773,15 @@ async def miniapp_admin_remove_user(
     schedules = await get_user_schedules(target_id)
     scheduler = get_scheduler()
     for s in schedules:
-        _remove_all_jobs_for_schedule(scheduler, s["schedule_id"])
+        if not github_username or _schedule_belongs_to(s, github_username):
+            _remove_all_jobs_for_schedule(scheduler, s["schedule_id"])
 
-    if target_role == "subadmin":
-        await remove_subadmin(target_id)
-    await delete_user(target_id)
+    if github_username:
+        await disconnect_user_account(target_id, github_username=github_username)
+    else:
+        if target_role == "subadmin":
+            await remove_subadmin(target_id)
+        await delete_user(target_id)
     return {"ok": True}
 
 
@@ -821,7 +835,7 @@ def _build_export_bytes(fmt: str, overview: Dict[str, Any]) -> tuple[bytes, str,
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow([
-        "Telegram ID", "Role", "Active GitHub", "All Connected Accounts",
+        "Telegram ID", "Role", "GitHub Account", "Active Account",
         "Auth Method", "Timezone", "Notifications", "Schedules Count",
         "Active Schedules", "Total Commits Pushed", "Connected At",
     ])
@@ -830,7 +844,7 @@ def _build_export_bytes(fmt: str, overview: Dict[str, Any]) -> tuple[bytes, str,
             u["telegram_id"],
             u["role"],
             u["github_username"],
-            " | ".join(u["accounts"]),
+            u.get("is_active_account", True),
             u["auth_method"],
             u["timezone"],
             u["notifications"],

@@ -498,23 +498,35 @@ async def get_admin_users_overview() -> Dict[str, Any]:
     for u in users:
         tid = int(u["telegram_id"])
         u_scheds = sched_by_user.get(tid, [])
-        active_cnt = sum(1 for s in u_scheds if s.get("status") == "active")
-        u_commits = sum(int(s.get("total_executions") or 0) for s in u_scheds)
-        accs = [a.get("github_username") for a in normalize_user_accounts(u) if a.get("github_username")]
+        active_gh = (u.get("github_username") or "").lower()
+        accs = normalize_user_accounts(u)
         role = "admin" if tid == main_id else ("subadmin" if tid in sub_ids else "user")
-        user_rows.append({
-            "telegram_id": tid,
-            "github_username": u.get("github_username", ""),
-            "accounts": accs,
-            "auth_method": (u.get("auth_method") or "oauth").upper(),
-            "timezone": u.get("timezone", "Asia/Kolkata"),
-            "notifications": u.get("notifications", True),
-            "connected_at": u.get("connected_at", ""),
-            "schedules_count": len(u_scheds),
-            "active_schedules_count": active_cnt,
-            "total_commits": u_commits,
-            "role": role,
-        })
+
+        for acc in accs:
+            gh_name = acc.get("github_username") or ""
+            if not gh_name:
+                continue
+            acc_scheds = [
+                s for s in u_scheds
+                if (s.get("github_username") or (s["repo"].split("/")[0] if "/" in s.get("repo", "") else "")).lower() == gh_name.lower()
+            ]
+            active_cnt = sum(1 for s in acc_scheds if s.get("status") == "active")
+            acc_commits = sum(int(s.get("total_executions") or 0) for s in acc_scheds)
+
+            user_rows.append({
+                "telegram_id": tid,
+                "github_username": gh_name,
+                "is_active_account": gh_name.lower() == active_gh,
+                "accounts_count": len(accs),
+                "auth_method": (acc.get("auth_method") or u.get("auth_method") or "oauth").upper(),
+                "timezone": u.get("timezone", "Asia/Kolkata"),
+                "notifications": u.get("notifications", True),
+                "connected_at": acc.get("connected_at") or u.get("connected_at", ""),
+                "schedules_count": len(acc_scheds),
+                "active_schedules_count": active_cnt,
+                "total_commits": acc_commits,
+                "role": role,
+            })
 
     user_rows.sort(key=lambda r: r["total_commits"], reverse=True)
     return {
